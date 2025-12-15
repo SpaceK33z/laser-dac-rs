@@ -179,7 +179,7 @@ pub struct ScanResponse {
     pub status: u8,
     /// Reserved byte
     pub reserved: u8,
-    /// Unit ID: [0] = Len, [1] = Cat, [2..Len] = ID, padded with '\0'
+    /// Unit ID: \[0\] = Len, \[1\] = Cat, \[2..Len\] = ID, padded with '\0'
     pub unit_id: [u8; 16],
     /// Hostname, not null-terminated, padded with '\0'
     pub hostname: [u8; 20],
