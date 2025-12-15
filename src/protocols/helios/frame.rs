@@ -203,7 +203,14 @@ mod tests {
     #[test]
     fn test_helios_conversion_nan_does_not_panic() {
         // NaN should produce some valid output without panicking
-        let laser_point = LaserPoint::new(f32::NAN, f32::NAN, 100 * 257, 100 * 257, 100 * 257, 100 * 257);
+        let laser_point = LaserPoint::new(
+            f32::NAN,
+            f32::NAN,
+            100 * 257,
+            100 * 257,
+            100 * 257,
+            100 * 257,
+        );
         let helios_point: Point = (&laser_point).into();
 
         // Just verify it's within valid range

@@ -843,7 +843,14 @@ impl From<&LaserPoint> for PointXyrgbi {
     fn from(p: &LaserPoint) -> Self {
         let x = (p.x.clamp(-1.0, 1.0) * 32767.0) as i16;
         let y = (p.y.clamp(-1.0, 1.0) * 32767.0) as i16;
-        PointXyrgbi::new(x, y, (p.r >> 8) as u8, (p.g >> 8) as u8, (p.b >> 8) as u8, (p.intensity >> 8) as u8)
+        PointXyrgbi::new(
+            x,
+            y,
+            (p.r >> 8) as u8,
+            (p.g >> 8) as u8,
+            (p.b >> 8) as u8,
+            (p.intensity >> 8) as u8,
+        )
     }
 }
 
