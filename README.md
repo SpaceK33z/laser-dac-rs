@@ -15,7 +15,7 @@ This crate does not apply any additional processing on points (like blanking), e
 ## Supported DACs
 
 | DAC                       | Connection                     | Features | Verified
-| ------------------------- | ------------------------------ | -------- |
+| ------------------------- | ------------------------------ | -------- | --------
 | Helios                    | USB                            | 12-bit   | ✅
 | Ether Dream               | Network                        | 16-bit   | ❌
 | IDN                       | Network (ILDA Digital Network) | 16-bit   | ❌
