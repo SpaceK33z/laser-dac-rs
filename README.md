@@ -10,15 +10,19 @@ This crate provides a complete solution for communicating with various laser DAC
 
 This crate does not apply any additional processing on points (like blanking), except to make it compatible with the target DAC.
 
+⚠️ **Warning**: use at your own risk! Laser projectors can be dangerous.
+
 ## Supported DACs
 
-| DAC                       | Connection                     | Features |
+| DAC                       | Connection                     | Features | Verified
 | ------------------------- | ------------------------------ | -------- |
-| Helios                    | USB                            | 12-bit   |
-| Ether Dream               | Network                        | 16-bit   |
-| IDN                       | Network (ILDA Digital Network) | 16-bit   |
-| LaserCube WiFi            | WiFi                           | 16-bit   |
-| LaserCube USB / Laserdock | USB                            | 12-bit   |
+| Helios                    | USB                            | 12-bit   | ✅
+| Ether Dream               | Network                        | 16-bit   | ❌
+| IDN                       | Network (ILDA Digital Network) | 16-bit   | ❌
+| LaserCube WiFi            | WiFi                           | 16-bit   | ❌
+| LaserCube USB / Laserdock | USB                            | 12-bit   | ❌
+
+The DACs that are not verified, I have not tested with the DAC itself yet. Help to test these would be very welcome!
 
 ## Quick Start
 
@@ -193,6 +197,13 @@ Enable only Helios:
 [dependencies]
 laser-dac = { version = "0.1", default-features = false, features = ["helios"] }
 ```
+
+# Acknowledgements
+
+* Helios DAC: heavily inspired from [helios-dac](https://github.com/maxjoehnk/helios-dac-rs)
+* Ether Dream DAC: heavily inspired from [ether-dream](https://github.com/nannou-org/ether-dream)
+* Lasercube USB / WIFI: inspired from [ildagen](https://github.com/Grix/ildagen) (ported from C++ to Rust)
+* IDN: inspired from [helios_dac](https://github.com/Grix/helios_dac) (ported from C++ to Rust)
 
 ## License
 
