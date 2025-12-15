@@ -14,6 +14,9 @@ use std::fmt;
 /// - x: -1.0 (left) to 1.0 (right)
 /// - y: -1.0 (bottom) to 1.0 (top)
 ///
+/// Colors are 16-bit (0-65535) to support high-resolution DACs.
+/// DACs with lower resolution (8-bit) will downscale automatically.
+///
 /// This allows each DAC to convert to its native format:
 /// - Helios: 12-bit unsigned (0-4095), inverted
 /// - EtherDream: 16-bit signed (-32768 to 32767)
@@ -23,19 +26,19 @@ pub struct LaserPoint {
     pub x: f32,
     /// Y coordinate, -1.0 to 1.0
     pub y: f32,
-    /// Red channel (0-255)
-    pub r: u8,
-    /// Green channel (0-255)
-    pub g: u8,
-    /// Blue channel (0-255)
-    pub b: u8,
-    /// Intensity (0-255)
-    pub intensity: u8,
+    /// Red channel (0-65535)
+    pub r: u16,
+    /// Green channel (0-65535)
+    pub g: u16,
+    /// Blue channel (0-65535)
+    pub b: u16,
+    /// Intensity (0-65535)
+    pub intensity: u16,
 }
 
 impl LaserPoint {
     /// Creates a new laser point.
-    pub fn new(x: f32, y: f32, r: u8, g: u8, b: u8, intensity: u8) -> Self {
+    pub fn new(x: f32, y: f32, r: u16, g: u16, b: u16, intensity: u16) -> Self {
         Self {
             x,
             y,

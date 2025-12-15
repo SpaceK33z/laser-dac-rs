@@ -137,13 +137,13 @@ fn create_triangle_frame() -> LaserFrame {
         // Move to first vertex (blanked)
         LaserPoint::blanked(-0.5, -0.5),
         // Red vertex (bottom-left)
-        LaserPoint::new(-0.5, -0.5, 255, 0, 0, 255),
+        LaserPoint::new(-0.5, -0.5, 65535, 0, 0, 65535),
         // Green vertex (bottom-right)
-        LaserPoint::new(0.5, -0.5, 0, 255, 0, 255),
+        LaserPoint::new(0.5, -0.5, 0, 65535, 0, 65535),
         // Blue vertex (top)
-        LaserPoint::new(0.0, 0.5, 0, 0, 255, 255),
+        LaserPoint::new(0.0, 0.5, 0, 0, 65535, 65535),
         // Back to red vertex to close
-        LaserPoint::new(-0.5, -0.5, 255, 0, 0, 255),
+        LaserPoint::new(-0.5, -0.5, 65535, 0, 0, 65535),
     ];
 
     LaserFrame::new(30000, points)
@@ -166,14 +166,14 @@ fn create_circle_frame(num_points: usize) -> LaserFrame {
         let hue = i as f32 / num_points as f32;
         let (r, g, b) = hsv_to_rgb(hue, 1.0, 1.0);
 
-        points.push(LaserPoint::new(x, y, r, g, b, 255));
+        points.push(LaserPoint::new(x, y, r, g, b, 65535));
     }
 
     LaserFrame::new(30000, points)
 }
 
 /// Convert HSV to RGB (simple implementation for the example).
-fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (u8, u8, u8) {
+fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (u16, u16, u16) {
     let h = h * 6.0;
     let i = h.floor() as i32;
     let f = h - i as f32;
@@ -190,5 +190,5 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (u8, u8, u8) {
         _ => (v, p, q),
     };
 
-    ((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8)
+    ((r * 65535.0) as u16, (g * 65535.0) as u16, (b * 65535.0) as u16)
 }

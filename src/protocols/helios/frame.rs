@@ -91,16 +91,16 @@ bitflags! {
 impl From<&LaserPoint> for Point {
     /// Convert a LaserPoint to a Helios Point.
     ///
-    /// LaserPoint uses f32 coordinates (-1.0 to 1.0).
-    /// Helios uses u16 12-bit coordinates (0-4095) with inverted axes.
+    /// LaserPoint uses f32 coordinates (-1.0 to 1.0) and u16 colors (0-65535).
+    /// Helios uses u16 12-bit coordinates (0-4095) with inverted axes and u8 colors.
     fn from(p: &LaserPoint) -> Self {
         let dac_x = ((1.0 - (p.x + 1.0) / 2.0).clamp(0.0, 1.0) * 4095.0) as u16;
         let dac_y = ((1.0 - (p.y + 1.0) / 2.0).clamp(0.0, 1.0) * 4095.0) as u16;
 
         Point {
             coordinate: Coordinate { x: dac_x, y: dac_y },
-            color: Color::new(p.r, p.g, p.b),
-            intensity: p.intensity,
+            color: Color::new((p.r >> 8) as u8, (p.g >> 8) as u8, (p.b >> 8) as u8),
+            intensity: (p.intensity >> 8) as u8,
         }
     }
 }
@@ -120,13 +120,14 @@ mod tests {
     #[test]
     fn test_helios_conversion_center() {
         // Center point (0, 0) should map to (2047, 2047) due to inversion
-        let laser_point = LaserPoint::new(0.0, 0.0, 128, 64, 32, 200);
+        // Colors: u16 values that downscale to expected u8 values (128, 64, 32, 200)
+        let laser_point = LaserPoint::new(0.0, 0.0, 128 * 257, 64 * 257, 32 * 257, 200 * 257);
         let helios_point: Point = (&laser_point).into();
 
         // (1.0 - (0.0 + 1.0) / 2.0) * 4095 = (1.0 - 0.5) * 4095 = 2047.5 -> 2047
         assert_eq!(helios_point.coordinate.x, 2047);
         assert_eq!(helios_point.coordinate.y, 2047);
-        // Colors should pass through unchanged
+        // Colors should downscale from u16 to u8 (>> 8)
         assert_eq!(helios_point.color.r, 128);
         assert_eq!(helios_point.color.g, 64);
         assert_eq!(helios_point.color.b, 32);
@@ -202,7 +203,7 @@ mod tests {
     #[test]
     fn test_helios_conversion_nan_does_not_panic() {
         // NaN should produce some valid output without panicking
-        let laser_point = LaserPoint::new(f32::NAN, f32::NAN, 100, 100, 100, 100);
+        let laser_point = LaserPoint::new(f32::NAN, f32::NAN, 100 * 257, 100 * 257, 100 * 257, 100 * 257);
         let helios_point: Point = (&laser_point).into();
 
         // Just verify it's within valid range

@@ -152,14 +152,14 @@ impl SizeBytes for Point {
 impl From<&LaserPoint> for Point {
     /// Convert a LaserPoint to a LaserCube WiFi Point.
     ///
-    /// LaserPoint uses f32 coordinates (-1.0 to 1.0) and u8 colors.
-    /// LaserCube WiFi uses offset binary coordinates and 12-bit colors.
+    /// LaserPoint uses f32 coordinates (-1.0 to 1.0) and u16 colors (0-65535).
+    /// LaserCube WiFi uses offset binary coordinates and 12-bit colors (0-4095).
     fn from(p: &LaserPoint) -> Self {
         let x = (p.x.clamp(-1.0, 1.0) * 32767.0) as i16;
         let y = (p.y.clamp(-1.0, 1.0) * 32767.0) as i16;
-        let r = (p.r as u16) << 4;
-        let g = (p.g as u16) << 4;
-        let b = (p.b as u16) << 4;
+        let r = p.r >> 4;
+        let g = p.g >> 4;
+        let b = p.b >> 4;
         Point::from_signed(x, y, r, g, b)
     }
 }

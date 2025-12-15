@@ -838,12 +838,12 @@ impl SizeBytes for PointXyrgbi {
 impl From<&LaserPoint> for PointXyrgbi {
     /// Convert a LaserPoint to an IDN PointXyrgbi.
     ///
-    /// LaserPoint uses f32 coordinates (-1.0 to 1.0).
-    /// IDN uses i16 signed coordinates (-32768 to 32767).
+    /// LaserPoint uses f32 coordinates (-1.0 to 1.0) and u16 colors (0-65535).
+    /// IDN PointXyrgbi uses i16 signed coordinates (-32768 to 32767) and u8 colors.
     fn from(p: &LaserPoint) -> Self {
         let x = (p.x.clamp(-1.0, 1.0) * 32767.0) as i16;
         let y = (p.y.clamp(-1.0, 1.0) * 32767.0) as i16;
-        PointXyrgbi::new(x, y, p.r, p.g, p.b, p.intensity)
+        PointXyrgbi::new(x, y, (p.r >> 8) as u8, (p.g >> 8) as u8, (p.b >> 8) as u8, (p.intensity >> 8) as u8)
     }
 }
 
@@ -1126,12 +1126,13 @@ mod tests {
     #[test]
     fn test_idn_conversion_center() {
         // Center point (0, 0) should map to (0, 0)
-        let laser_point = LaserPoint::new(0.0, 0.0, 128, 64, 32, 200);
+        // Colors: u16 values that downscale to expected u8 values (128, 64, 32, 200)
+        let laser_point = LaserPoint::new(0.0, 0.0, 128 * 257, 64 * 257, 32 * 257, 200 * 257);
         let idn_point: PointXyrgbi = (&laser_point).into();
 
         assert_eq!(idn_point.x, 0);
         assert_eq!(idn_point.y, 0);
-        // IDN uses u8 colors directly (no scaling)
+        // IDN PointXyrgbi uses u8 colors (downscaled from u16 via >> 8)
         assert_eq!(idn_point.r, 128);
         assert_eq!(idn_point.g, 64);
         assert_eq!(idn_point.b, 32);
@@ -1151,16 +1152,21 @@ mod tests {
     #[test]
     fn test_idn_conversion_max() {
         // Max point (1, 1) should map to (32767, 32767)
-        let laser_point = LaserPoint::new(1.0, 1.0, 255, 255, 255, 255);
+        let laser_point = LaserPoint::new(1.0, 1.0, 65535, 65535, 65535, 65535);
         let idn_point: PointXyrgbi = (&laser_point).into();
 
         assert_eq!(idn_point.x, 32767);
         assert_eq!(idn_point.y, 32767);
+        // Max u16 (65535) >> 8 = 255
+        assert_eq!(idn_point.r, 255);
+        assert_eq!(idn_point.g, 255);
+        assert_eq!(idn_point.b, 255);
+        assert_eq!(idn_point.i, 255);
     }
 
     #[test]
     fn test_idn_conversion_half_values() {
-        let laser_point = LaserPoint::new(0.5, -0.5, 100, 100, 100, 100);
+        let laser_point = LaserPoint::new(0.5, -0.5, 100 * 257, 100 * 257, 100 * 257, 100 * 257);
         let idn_point: PointXyrgbi = (&laser_point).into();
 
         // 0.5 * 32767 = 16383.5 -> 16383
@@ -1171,7 +1177,7 @@ mod tests {
     #[test]
     fn test_idn_conversion_clamps_out_of_range() {
         // Out of range values should clamp
-        let laser_point = LaserPoint::new(2.0, -3.0, 255, 255, 255, 255);
+        let laser_point = LaserPoint::new(2.0, -3.0, 65535, 65535, 65535, 65535);
         let idn_point: PointXyrgbi = (&laser_point).into();
 
         assert_eq!(idn_point.x, 32767);

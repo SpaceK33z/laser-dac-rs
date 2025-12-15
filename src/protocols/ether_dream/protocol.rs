@@ -245,23 +245,20 @@ impl SizeBytes for DacPoint {
 impl From<&LaserPoint> for DacPoint {
     /// Convert a LaserPoint to an Ether Dream DacPoint.
     ///
-    /// LaserPoint uses f32 coordinates (-1.0 to 1.0) and u8 colors.
-    /// Ether Dream uses i16 signed coordinates and u16 colors.
+    /// LaserPoint uses f32 coordinates (-1.0 to 1.0) and u16 colors (0-65535).
+    /// Ether Dream uses i16 signed coordinates and u16 colors (direct mapping).
     fn from(p: &LaserPoint) -> Self {
         let x = (p.x.clamp(-1.0, 1.0) * 32767.0) as i16;
         let y = (p.y.clamp(-1.0, 1.0) * 32767.0) as i16;
-        let r = (p.r as u16) * 257;
-        let g = (p.g as u16) * 257;
-        let b = (p.b as u16) * 257;
 
         DacPoint {
             control: 0,
             x,
             y,
-            r,
-            g,
-            b,
-            i: (p.intensity as u16) * 257,
+            r: p.r,
+            g: p.g,
+            b: p.b,
+            i: p.intensity,
             u1: 0,
             u2: 0,
         }
@@ -626,19 +623,19 @@ mod tests {
     // DacPoint Conversion Tests
     // These test the From<&LaserPoint> implementation which handles:
     // - 16-bit signed coordinate conversion (f32 -1..1 to i16 -32767..32767)
-    // - Color scaling from u8 (0-255) to u16 (0-65535) using *257
+    // - Direct u16 color pass-through (no scaling needed)
     // - Out-of-range clamping
     // ==========================================================================
 
     #[test]
     fn test_ether_dream_conversion_center() {
         // Center point (0, 0) should map to (0, 0)
-        let laser_point = LaserPoint::new(0.0, 0.0, 128, 64, 32, 200);
+        let laser_point = LaserPoint::new(0.0, 0.0, 128 * 257, 64 * 257, 32 * 257, 200 * 257);
         let dac_point: DacPoint = (&laser_point).into();
 
         assert_eq!(dac_point.x, 0);
         assert_eq!(dac_point.y, 0);
-        // Colors: u8 * 257 scales 0-255 to 0-65535
+        // Colors: direct u16 pass-through
         assert_eq!(dac_point.r, 128 * 257);
         assert_eq!(dac_point.g, 64 * 257);
         assert_eq!(dac_point.b, 32 * 257);
@@ -654,7 +651,7 @@ mod tests {
         assert_eq!(min_dac.y, -32767);
 
         // Max point (1, 1) should map to (32767, 32767)
-        let max = LaserPoint::new(1.0, 1.0, 255, 255, 255, 255);
+        let max = LaserPoint::new(1.0, 1.0, 65535, 65535, 65535, 65535);
         let max_dac: DacPoint = (&max).into();
         assert_eq!(max_dac.x, 32767);
         assert_eq!(max_dac.y, 32767);
@@ -663,7 +660,7 @@ mod tests {
     #[test]
     fn test_ether_dream_conversion_clamps_out_of_range() {
         // Out of range values should clamp
-        let laser_point = LaserPoint::new(2.0, -3.0, 255, 255, 255, 255);
+        let laser_point = LaserPoint::new(2.0, -3.0, 65535, 65535, 65535, 65535);
         let dac_point: DacPoint = (&laser_point).into();
 
         assert_eq!(dac_point.x, 32767);
@@ -671,15 +668,15 @@ mod tests {
     }
 
     #[test]
-    fn test_ether_dream_color_scaling_uses_257() {
-        // 257 = 0x101, so 0xFF * 257 = 0xFFFF (perfect u8->u16 expansion)
-        let laser_point = LaserPoint::new(0.0, 0.0, 0, 127, 255, 1);
+    fn test_ether_dream_color_direct_passthrough() {
+        // Colors should pass through directly without scaling
+        let laser_point = LaserPoint::new(0.0, 0.0, 0, 32639, 65535, 257);
         let dac_point: DacPoint = (&laser_point).into();
 
         assert_eq!(dac_point.r, 0);
-        assert_eq!(dac_point.g, 127 * 257); // 32639
-        assert_eq!(dac_point.b, 255 * 257); // 65535 (max u16)
-        assert_eq!(dac_point.i, 1 * 257); // 257
+        assert_eq!(dac_point.g, 32639);
+        assert_eq!(dac_point.b, 65535);
+        assert_eq!(dac_point.i, 257);
     }
 
     #[test]
