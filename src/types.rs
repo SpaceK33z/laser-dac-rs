@@ -193,7 +193,7 @@ impl Default for EnabledDacTypes {
 
 /// Information about a discovered DAC device.
 /// The name is the unique identifier for the device.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DacDevice {
     pub name: String,
     pub dac_type: DacType,
@@ -215,7 +215,7 @@ pub enum DacConnectionState {
 }
 
 /// Information about a discovered DAC device.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscoveredDac {
     /// The type of DAC.
     pub dac_type: DacType,

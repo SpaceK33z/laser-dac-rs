@@ -42,7 +42,7 @@ pub enum WorkerStatus {
 /// ```ignore
 /// use laser_dac::{DacWorker, DacType, LaserFrame, LaserPoint};
 ///
-/// // Assume `backend` is a connected DacBackend
+/// // Assume `backend` is a connected [`DacBackend`]
 /// let worker = DacWorker::new("My DAC".to_string(), DacType::Helios, backend);
 ///
 /// // Submit frames (non-blocking)

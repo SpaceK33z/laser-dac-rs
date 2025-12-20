@@ -536,7 +536,7 @@ impl UnifiedDiscovery {
 
     /// Connect to a discovered device.
     ///
-    /// Returns a boxed backend that can be used with `DacWorker`.
+    /// Returns a boxed backend that can be used with [`crate::DacWorker`].
     #[allow(unreachable_patterns)]
     pub fn connect(&self, device: DiscoveredDevice) -> Result<Box<dyn DacBackend>> {
         match device.dac_type {

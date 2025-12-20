@@ -1,7 +1,7 @@
 //! DAC backend abstraction and point conversion.
 //!
-//! Provides a unified `DacBackend` trait for all DAC types and handles
-//! point conversion from `LaserFrame` to device-specific formats.
+//! Provides a unified [`DacBackend`] trait for all DAC types and handles
+//! point conversion from [`LaserFrame`] to device-specific formats.
 
 use crate::error::{Error, Result};
 use crate::types::{DacType, LaserFrame};
@@ -19,10 +19,16 @@ pub enum WriteResult {
     DeviceBusy,
 }
 
+mod private {
+    pub trait Sealed {}
+}
+
 /// Unified interface for all DAC backends.
 ///
 /// Each backend handles its own point conversion and device-specific protocol.
-pub trait DacBackend: Send + 'static {
+///
+/// This trait is sealed and cannot be implemented outside of this crate.
+pub trait DacBackend: private::Sealed + Send + 'static {
     /// Get the DAC type.
     fn dac_type(&self) -> DacType;
 
@@ -64,6 +70,8 @@ mod helios_backend {
         dac: Option<HeliosDac>,
         device_index: usize,
     }
+
+    impl super::private::Sealed for HeliosBackend {}
 
     impl HeliosBackend {
         /// Create a new Helios backend for the given device index.
@@ -200,6 +208,8 @@ mod ether_dream_backend {
         stream: Option<stream::Stream>,
     }
 
+    impl super::private::Sealed for EtherDreamBackend {}
+
     impl EtherDreamBackend {
         pub fn new(broadcast: DacBroadcast, ip_addr: IpAddr) -> Self {
             Self {
@@ -335,6 +345,8 @@ mod idn_backend {
         stream: Option<stream::Stream>,
     }
 
+    impl super::private::Sealed for IdnBackend {}
+
     impl IdnBackend {
         pub fn new(server: ServerInfo, service: ServiceInfo) -> Self {
             Self {
@@ -417,6 +429,8 @@ mod lasercube_wifi_backend {
         addressed: Addressed,
         stream: Option<stream::Stream>,
     }
+
+    impl super::private::Sealed for LasercubeWifiBackend {}
 
     impl LasercubeWifiBackend {
         pub fn new(addressed: Addressed) -> Self {
@@ -506,6 +520,8 @@ mod lasercube_usb_backend {
         device: Option<rusb::Device<rusb::Context>>,
         stream: Option<Stream<rusb::Context>>,
     }
+
+    impl super::private::Sealed for LasercubeUsbBackend {}
 
     impl LasercubeUsbBackend {
         pub fn new(device: rusb::Device<rusb::Context>) -> Self {

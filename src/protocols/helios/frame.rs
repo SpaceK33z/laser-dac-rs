@@ -89,9 +89,9 @@ bitflags! {
 }
 
 impl From<&LaserPoint> for Point {
-    /// Convert a LaserPoint to a Helios Point.
+    /// Convert a [`LaserPoint`] to a Helios [`Point`].
     ///
-    /// LaserPoint uses f32 coordinates (-1.0 to 1.0) and u16 colors (0-65535).
+    /// [`LaserPoint`] uses f32 coordinates (-1.0 to 1.0) and u16 colors (0-65535).
     /// Helios uses u16 12-bit coordinates (0-4095) with inverted axes and u8 colors.
     fn from(p: &LaserPoint) -> Self {
         let dac_x = ((1.0 - (p.x + 1.0) / 2.0).clamp(0.0, 1.0) * 4095.0) as u16;
