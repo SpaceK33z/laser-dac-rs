@@ -342,7 +342,7 @@ mod ether_dream_backend {
                 // After underflow recovery, send data first, then begin separately
                 stream
                     .queue_commands()
-                    .data(points_to_send.clone().into_iter())
+                    .data(points_to_send.clone())
                     .submit()
                     .map_err(|e| Error::context("Failed to send data", e))?;
 
@@ -366,7 +366,7 @@ mod ether_dream_backend {
                         // Send data first
                         stream
                             .queue_commands()
-                            .data(points_to_send.clone().into_iter())
+                            .data(points_to_send.clone())
                             .submit()
                             .map_err(|e| Error::context("Failed to send data", e))?;
 
@@ -383,7 +383,7 @@ mod ether_dream_backend {
                         // Send data first
                         stream
                             .queue_commands()
-                            .data(points_to_send.clone().into_iter())
+                            .data(points_to_send.clone())
                             .submit()
                             .map_err(|e| Error::context("Failed to send data", e))?;
 
@@ -401,12 +401,12 @@ mod ether_dream_backend {
                             stream
                                 .queue_commands()
                                 .update(0, point_rate)
-                                .data(points_to_send.clone().into_iter())
+                                .data(points_to_send.clone())
                                 .submit()
                         } else {
                             stream
                                 .queue_commands()
-                                .data(points_to_send.clone().into_iter())
+                                .data(points_to_send.clone())
                                 .submit()
                         };
 
@@ -427,7 +427,7 @@ mod ether_dream_backend {
 
                                 stream
                                     .queue_commands()
-                                    .data(points_to_send.clone().into_iter())
+                                    .data(points_to_send.clone())
                                     .submit()
                                     .map_err(|e| {
                                         Error::context("Failed to send data after recovery", e)

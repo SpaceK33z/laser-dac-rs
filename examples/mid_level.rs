@@ -15,6 +15,7 @@ use std::thread;
 use std::time::Duration;
 
 fn main() -> Result<()> {
+    env_logger::init();
     let args = Args::parse();
 
     println!("Scanning for DACs...\n");

@@ -18,9 +18,9 @@ This crate does not apply any additional processing on points (like blanking), e
 | ------------------------- | ------------------------------ | -------- | --------
 | Helios                    | USB                            | 12-bit   | ✅
 | Ether Dream               | Network                        | 16-bit   | ❌
-| IDN                       | Network (ILDA Digital Network) | 16-bit   | ❌
+| IDN                       | Network (ILDA Digital Network) | 16-bit   | ✅
 | LaserCube WiFi            | WiFi                           | 16-bit   | ❌
-| LaserCube USB / Laserdock | USB                            | 12-bit   | ❌
+| LaserCube USB / Laserdock | USB                            | 12-bit   | ✅
 
 The DACs that are not verified, I have not tested with the DAC itself yet. Help to test these would be very welcome!
 
@@ -47,7 +47,7 @@ There are two discovery APIs:
 
 1. **Scans every 2 seconds** for new devices across all enabled DAC types
 2. **Tracks known devices** to avoid duplicate connections
-3. **Automatic reconnection** - after you call `mark_disconnected`, the device is removed from tracking and will reconnect on the next scan
+3. **Automatic reconnection** - when a device connection fails, it's removed from tracking and will reconnect on the next scan
 
 Multiple devices of the same type are supported - each is identified by a unique name (MAC address for Ether Dream, serial number for LaserCube, etc.)
 

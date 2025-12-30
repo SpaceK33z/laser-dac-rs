@@ -23,7 +23,7 @@
 //! All backends use normalized coordinates:
 //! - X: -1.0 (left) to 1.0 (right)
 //! - Y: -1.0 (bottom) to 1.0 (top)
-//! - Colors: 0-255 for R, G, B, and intensity
+//! - Colors: 0-65535 for R, G, B, and intensity
 //!
 //! Each backend handles conversion to its native format internally.
 
@@ -42,6 +42,7 @@ pub use error::{Error, Result};
 pub use backend::{DacBackend, WriteResult};
 
 // Discovery and worker types
+pub use discovery::{DacDiscovery, DiscoveredDevice};
 pub use discovery_worker::DacDiscoveryWorker;
 pub use worker::DacWorker;
 

@@ -39,9 +39,10 @@ impl PointFormat {
     }
 
     /// Get the word count for the channel config header.
-    /// This is the number of 16-bit words in the descriptor array.
+    /// This is the number of 32-bit words (descriptor pairs) in the descriptor array.
+    /// The C++ reference uses wordCount = descriptors.len() / 2 (4, 5, 10 for the formats).
     fn word_count(&self) -> u8 {
-        self.descriptors().len() as u8
+        (self.descriptors().len() / 2) as u8
     }
 
     /// Get the channel descriptors for this format.
@@ -288,24 +289,26 @@ impl Stream {
         self.packet_buffer.clear();
 
         // Packet header
+        let seq = self.next_sequence();
         let packet_header = PacketHeader {
             command: IDNCMD_RT_CNLMSG,
             flags: self.client_group,
-            sequence: self.next_sequence(),
+            sequence: seq,
         };
         self.packet_buffer.write_bytes(packet_header)?;
 
         // Channel message header
-        // totalSize = everything after totalSize+contentID (first 4 bytes of ChannelMessageHeader)
-        // This includes: timestamp (4) + config + sampleChunk (4) + samples
-        let msg_size = 4 // timestamp only (not total_size and content_id)
+        // totalSize = size from ChannelMessage start to end of packet payload
+        // Per C++ reference: totalSize = bufferEnd - channelMsgHdr (includes full 8-byte header)
+        let msg_size = ChannelMessageHeader::SIZE_BYTES
             + config_size
             + SampleChunkHeader::SIZE_BYTES
             + points_to_send * bytes_per_sample;
 
+        let final_content_id = content_id | IDNVAL_CNKTYPE_LPGRF_WAVE as u16;
         let channel_msg = ChannelMessageHeader {
             total_size: msg_size as u16,
-            content_id: content_id | IDNVAL_CNKTYPE_LPGRF_WAVE as u16,
+            content_id: final_content_id,
             timestamp: (self.timestamp & 0xFFFF_FFFF) as u32,
         };
         self.packet_buffer.write_bytes(channel_msg)?;
@@ -351,7 +354,6 @@ impl Stream {
 
         // If there are remaining points, send them in subsequent packets
         if points_to_send < points.len() {
-            // For subsequent packets, no config needed
             self.write_frame_continuation(&points[points_to_send..])?;
         }
 
@@ -390,8 +392,8 @@ impl Stream {
         self.packet_buffer.write_bytes(packet_header)?;
 
         // Channel message header
-        // totalSize = everything after totalSize+contentID (first 4 bytes of ChannelMessageHeader)
-        let msg_size = 4 // timestamp only
+        // totalSize = size from ChannelMessage start to end of packet payload
+        let msg_size = ChannelMessageHeader::SIZE_BYTES
             + SampleChunkHeader::SIZE_BYTES
             + points_to_send * bytes_per_sample;
 
@@ -501,7 +503,8 @@ impl Stream {
         self.packet_buffer.write_bytes(packet_header)?;
 
         // Channel message header
-        let msg_size = 4 // timestamp only
+        // totalSize = size from ChannelMessage start to end of packet payload
+        let msg_size = ChannelMessageHeader::SIZE_BYTES
             + config_size
             + SampleChunkHeader::SIZE_BYTES
             + points_to_send * bytes_per_sample;
@@ -572,7 +575,9 @@ impl Stream {
             Err(e) if e.kind() == io::ErrorKind::TimedOut => {
                 return Err(CommunicationError::Response(ResponseError::Timeout));
             }
-            Err(e) => return Err(CommunicationError::Io(e)),
+            Err(e) => {
+                return Err(CommunicationError::Io(e));
+            }
         };
 
         if len < PacketHeader::SIZE_BYTES + AcknowledgeResponse::SIZE_BYTES {
@@ -618,10 +623,11 @@ impl Stream {
         // Build ping request packet
         self.packet_buffer.clear();
 
+        let seq = self.next_sequence();
         let header = PacketHeader {
             command: IDNCMD_PING_REQUEST,
             flags: self.client_group,
-            sequence: self.next_sequence(),
+            sequence: seq,
         };
         self.packet_buffer.write_bytes(header)?;
 
@@ -640,7 +646,9 @@ impl Stream {
             Err(e) if e.kind() == io::ErrorKind::TimedOut => {
                 return Err(CommunicationError::Response(ResponseError::Timeout));
             }
-            Err(e) => return Err(CommunicationError::Io(e)),
+            Err(e) => {
+                return Err(CommunicationError::Io(e));
+            }
         };
 
         if len < PacketHeader::SIZE_BYTES {
@@ -927,10 +935,11 @@ impl Stream {
         self.packet_buffer.clear();
 
         // Packet header
+        let seq1 = self.next_sequence();
         let packet_header = PacketHeader {
             command: IDNCMD_RT_CNLMSG,
             flags: self.client_group,
-            sequence: self.next_sequence(),
+            sequence: seq1,
         };
         self.packet_buffer.write_bytes(packet_header)?;
 
@@ -940,9 +949,9 @@ impl Stream {
             | channel_id
             | IDNVAL_CNKTYPE_VOID as u16;
 
-        // totalSize = everything after totalSize+contentID (first 4 bytes of ChannelMessageHeader)
-        // = timestamp (4) + config (4) = 8
-        let msg_size = 4 + ChannelConfigHeader::SIZE_BYTES;
+        // totalSize = size from ChannelMessage start to end of packet payload
+        // Per C++ reference: totalSize = bufferEnd - channelMsgHdr = ChannelMsg(8) + Config(4) = 12
+        let msg_size = ChannelMessageHeader::SIZE_BYTES + ChannelConfigHeader::SIZE_BYTES;
         let channel_msg = ChannelMessageHeader {
             total_size: msg_size as u16,
             content_id,
@@ -958,7 +967,6 @@ impl Stream {
             service_mode: 0,
         };
         self.packet_buffer.write_bytes(config)?;
-
         self.socket.send(&self.packet_buffer)?;
 
         // Then send session close
@@ -970,7 +978,6 @@ impl Stream {
             sequence: self.next_sequence(),
         };
         self.packet_buffer.write_bytes(close_header)?;
-
         self.socket.send(&self.packet_buffer)?;
 
         Ok(())
@@ -1012,10 +1019,11 @@ mod tests {
 
     #[test]
     fn point_format_word_count() {
-        // word_count is the number of descriptor words
-        assert_eq!(PointFormat::Xyrgbi.word_count(), 8); // 8 descriptors
-        assert_eq!(PointFormat::XyrgbHighRes.word_count(), 10); // 10 descriptors
-        assert_eq!(PointFormat::Extended.word_count(), 20); // 20 descriptors
+        // word_count is the number of 32-bit words (descriptor pairs)
+        // Per C++ reference: XYRGBI=4, XyrgbHighRes=5, Extended=10
+        assert_eq!(PointFormat::Xyrgbi.word_count(), 4);
+        assert_eq!(PointFormat::XyrgbHighRes.word_count(), 5);
+        assert_eq!(PointFormat::Extended.word_count(), 10);
     }
 
     #[test]

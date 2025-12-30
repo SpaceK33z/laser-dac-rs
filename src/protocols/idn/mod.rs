@@ -31,6 +31,7 @@ pub mod error;
 pub mod protocol;
 
 use dac::{RelayInfo, ServerInfo, ServiceInfo};
+use log::debug;
 use protocol::{
     PacketHeader, ReadBytes, ScanResponse, ServiceMapEntry, ServiceMapResponseHeader, SizeBytes,
     WriteBytes, IDNCMD_SCAN_REQUEST, IDNCMD_SCAN_RESPONSE, IDNCMD_SERVICEMAP_REQUEST,
@@ -163,9 +164,8 @@ impl ServerScanner {
                     // Timeout on recv, continue waiting
                     continue;
                 }
-                Err(e) => {
-                    // Log but don't fail on other errors
-                    eprintln!("Warning: recv error: {}", e);
+                Err(_) => {
+                    // Ignore other errors
                 }
             }
         }
@@ -173,25 +173,22 @@ impl ServerScanner {
         // Query service maps for each discovered server
         for server in servers.values_mut() {
             if let Some(&addr) = server.addresses.first() {
-                if let Err(e) = self.query_service_map(server, addr) {
-                    eprintln!(
-                        "Warning: failed to get service map for {}: {}",
-                        server.hostname, e
-                    );
-                }
+                let _ = self.query_service_map(server, addr);
             }
         }
 
+        debug!("IDN: scan complete, found {} servers", servers.len());
         Ok(servers.into_values().collect())
     }
 
     /// Send broadcast scan request to all network interfaces.
     fn send_broadcast_scan(&mut self) -> io::Result<()> {
         // Build scan request packet
+        let seq = self.next_sequence();
         let header = PacketHeader {
             command: IDNCMD_SCAN_REQUEST,
             flags: self.client_group,
-            sequence: self.next_sequence(),
+            sequence: seq,
         };
 
         let mut packet = Vec::with_capacity(PacketHeader::SIZE_BYTES);
@@ -247,10 +244,11 @@ impl ServerScanner {
     /// Query the service map from a server.
     fn query_service_map(&mut self, server: &mut ServerInfo, addr: SocketAddr) -> io::Result<()> {
         // Build service map request
+        let seq = self.next_sequence();
         let header = PacketHeader {
             command: IDNCMD_SERVICEMAP_REQUEST,
             flags: self.client_group,
-            sequence: self.next_sequence(),
+            sequence: seq,
         };
 
         let mut packet = Vec::with_capacity(PacketHeader::SIZE_BYTES);
