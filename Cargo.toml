@@ -31,6 +31,9 @@ lasercube-wifi = ["dep:socket2", "dep:libc"]
 # Optional serialization
 serde = ["dep:serde"]
 
+# Test utilities (exposes additional APIs for testing)
+testutils = []
+
 [dependencies]
 thiserror = "1.0"
 bitflags = "2"

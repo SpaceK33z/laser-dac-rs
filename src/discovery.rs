@@ -45,8 +45,6 @@ use crate::protocols::helios::{HeliosDac, HeliosDacController};
 #[cfg(feature = "ether-dream")]
 use crate::backend::EtherDreamBackend;
 #[cfg(feature = "ether-dream")]
-use crate::protocols::ether_dream::dac;
-#[cfg(feature = "ether-dream")]
 use crate::protocols::ether_dream::protocol::DacBroadcast as EtherDreamBroadcast;
 #[cfg(feature = "ether-dream")]
 use crate::protocols::ether_dream::recv_dac_broadcasts;
@@ -59,6 +57,10 @@ use crate::protocols::idn::dac::ServerInfo as IdnServerInfo;
 use crate::protocols::idn::dac::ServiceInfo as IdnServiceInfo;
 #[cfg(feature = "idn")]
 use crate::protocols::idn::scan_for_servers;
+#[cfg(feature = "idn")]
+use crate::protocols::idn::ServerScanner;
+#[cfg(feature = "idn")]
+use std::net::SocketAddr;
 
 #[cfg(feature = "lasercube-wifi")]
 use crate::backend::LasercubeWifiBackend;
@@ -84,20 +86,87 @@ use crate::protocols::lasercube_usb::DacController as LasercubeUsbController;
 ///
 /// Use `DacDiscovery::connect()` to establish a connection and get a backend.
 pub struct DiscoveredDevice {
-    name: String,
     dac_type: DacType,
+    ip_address: Option<IpAddr>,
+    mac_address: Option<[u8; 6]>,
+    hostname: Option<String>,
+    serial_number: Option<String>,
+    usb_address: Option<String>,
+    hardware_name: Option<String>,
     inner: DiscoveredDeviceInner,
 }
 
 impl DiscoveredDevice {
     /// Returns the device name (unique identifier).
-    pub fn name(&self) -> &str {
-        &self.name
+    /// For network devices: IP address.
+    /// For USB devices: hardware name or bus:address.
+    pub fn name(&self) -> String {
+        if let Some(ip) = self.ip_address {
+            ip.to_string()
+        } else if let Some(ref hw_name) = self.hardware_name {
+            hw_name.clone()
+        } else if let Some(ref usb) = self.usb_address {
+            usb.clone()
+        } else {
+            "Unknown".to_string()
+        }
     }
 
     /// Returns the DAC type.
     pub fn dac_type(&self) -> DacType {
         self.dac_type
+    }
+
+    /// Returns a lightweight, cloneable info struct for this device.
+    pub fn info(&self) -> DiscoveredDeviceInfo {
+        DiscoveredDeviceInfo {
+            dac_type: self.dac_type,
+            ip_address: self.ip_address,
+            mac_address: self.mac_address,
+            hostname: self.hostname.clone(),
+            serial_number: self.serial_number.clone(),
+            usb_address: self.usb_address.clone(),
+            hardware_name: self.hardware_name.clone(),
+        }
+    }
+}
+
+/// Lightweight info about a discovered device.
+///
+/// This struct is Clone-able and can be used for filtering and reporting
+/// without consuming the original `DiscoveredDevice`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DiscoveredDeviceInfo {
+    /// The DAC type.
+    pub dac_type: DacType,
+    /// IP address for network devices, None for USB devices.
+    pub ip_address: Option<IpAddr>,
+    /// MAC address (Ether Dream only).
+    pub mac_address: Option<[u8; 6]>,
+    /// Hostname (IDN only).
+    pub hostname: Option<String>,
+    /// Serial number (LaserCube WiFi only).
+    pub serial_number: Option<String>,
+    /// USB bus:address (LaserCube USB only).
+    pub usb_address: Option<String>,
+    /// Device name from hardware (Helios only).
+    pub hardware_name: Option<String>,
+}
+
+impl DiscoveredDeviceInfo {
+    /// Returns the device name (unique identifier).
+    /// For network devices: IP address.
+    /// For USB devices: hardware name or bus:address.
+    pub fn name(&self) -> String {
+        if let Some(ip) = self.ip_address {
+            ip.to_string()
+        } else if let Some(ref hw_name) = self.hardware_name {
+            hw_name.clone()
+        } else if let Some(ref usb) = self.usb_address {
+            usb.clone()
+        } else {
+            "Unknown".to_string()
+        }
     }
 }
 
@@ -175,12 +244,17 @@ impl HeliosDiscovery {
                 Err(_) => continue,
             };
 
-            let name = opened
+            let hardware_name = opened
                 .name()
                 .unwrap_or_else(|_| "Unknown Helios".to_string());
             discovered.push(DiscoveredDevice {
-                name,
                 dac_type: DacType::Helios,
+                ip_address: None,
+                mac_address: None,
+                hostname: None,
+                serial_number: None,
+                usb_address: None,
+                hardware_name: Some(hardware_name),
                 inner: DiscoveredDeviceInner::Helios(opened),
             });
         }
@@ -244,8 +318,6 @@ impl EtherDreamDiscovery {
                 }
             };
 
-            let mac = dac::MacAddress(broadcast.mac_address);
-            let name = mac.to_string();
             let ip = source_addr.ip();
 
             // Skip duplicate MACs - but keep polling to find other devices
@@ -255,8 +327,13 @@ impl EtherDreamDiscovery {
             seen_macs.insert(broadcast.mac_address);
 
             discovered.push(DiscoveredDevice {
-                name,
                 dac_type: DacType::EtherDream,
+                ip_address: Some(ip),
+                mac_address: Some(broadcast.mac_address),
+                hostname: None,
+                serial_number: None,
+                usb_address: None,
+                hardware_name: None,
                 inner: DiscoveredDeviceInner::EtherDream { broadcast, ip },
             });
         }
@@ -311,11 +388,17 @@ impl IdnDiscovery {
                 None => continue,
             };
 
-            let name = format!("IDN:{}", server.hostname);
+            let ip_address = server.addresses.first().map(|addr| addr.ip());
+            let hostname = server.hostname.clone();
 
             discovered.push(DiscoveredDevice {
-                name,
                 dac_type: DacType::Idn,
+                ip_address,
+                mac_address: None,
+                hostname: Some(hostname),
+                serial_number: None,
+                usb_address: None,
+                hardware_name: None,
                 inner: DiscoveredDeviceInner::Idn { server, service },
             });
         }
@@ -329,6 +412,45 @@ impl IdnDiscovery {
         };
 
         Ok(Box::new(IdnBackend::new(server, service)))
+    }
+
+    /// Scan a specific address for IDN devices.
+    ///
+    /// This is useful for testing with mock servers on localhost where
+    /// broadcast won't work.
+    pub fn scan_address(&mut self, addr: SocketAddr) -> Vec<DiscoveredDevice> {
+        let mut scanner = match ServerScanner::new(0) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+
+        let servers = match scanner.scan_address(addr, self.scan_timeout) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+
+        let mut discovered = Vec::new();
+        for server in servers {
+            let service = match server.find_laser_projector() {
+                Some(service) => service.clone(),
+                None => continue,
+            };
+
+            let ip_address = server.addresses.first().map(|addr| addr.ip());
+            let hostname = server.hostname.clone();
+
+            discovered.push(DiscoveredDevice {
+                dac_type: DacType::Idn,
+                ip_address,
+                mac_address: None,
+                hostname: Some(hostname),
+                serial_number: None,
+                usb_address: None,
+                hardware_name: None,
+                inner: DiscoveredDeviceInner::Idn { server, service },
+            });
+        }
+        discovered
     }
 }
 
@@ -374,11 +496,17 @@ impl LasercubeWifiDiscovery {
                 Err(_) => continue,
             };
 
-            let name = format!("LaserCube:{}", device_info.serial_number);
+            let ip_address = source_addr.ip();
+            let serial_number = device_info.serial_number.clone();
 
             discovered.push(DiscoveredDevice {
-                name,
                 dac_type: DacType::LasercubeWifi,
+                ip_address: Some(ip_address),
+                mac_address: None,
+                hostname: None,
+                serial_number: Some(serial_number),
+                usb_address: None,
+                hardware_name: None,
                 inner: DiscoveredDeviceInner::LasercubeWifi {
                     info: device_info,
                     source_addr,
@@ -433,11 +561,16 @@ impl LasercubeUsbDiscovery {
 
         let mut discovered = Vec::new();
         for device in devices {
-            let name = format!("LaserCube USB:{}:{}", device.bus_number(), device.address());
+            let usb_address = format!("{}:{}", device.bus_number(), device.address());
 
             discovered.push(DiscoveredDevice {
-                name,
                 dac_type: DacType::LasercubeUsb,
+                ip_address: None,
+                mac_address: None,
+                hostname: None,
+                serial_number: None,
+                usb_address: Some(usb_address),
+                hardware_name: None,
                 inner: DiscoveredDeviceInner::LasercubeUsb(device),
             });
         }
@@ -470,6 +603,8 @@ pub struct DacDiscovery {
     etherdream: EtherDreamDiscovery,
     #[cfg(feature = "idn")]
     idn: IdnDiscovery,
+    #[cfg(all(feature = "idn", feature = "testutils"))]
+    idn_scan_addresses: Vec<SocketAddr>,
     #[cfg(feature = "lasercube-wifi")]
     lasercube_wifi: LasercubeWifiDiscovery,
     #[cfg(feature = "lasercube-usb")]
@@ -491,12 +626,25 @@ impl DacDiscovery {
             etherdream: EtherDreamDiscovery::new(),
             #[cfg(feature = "idn")]
             idn: IdnDiscovery::new(),
+            #[cfg(all(feature = "idn", feature = "testutils"))]
+            idn_scan_addresses: Vec::new(),
             #[cfg(feature = "lasercube-wifi")]
             lasercube_wifi: LasercubeWifiDiscovery::new(),
             #[cfg(feature = "lasercube-usb")]
             lasercube_usb: LasercubeUsbDiscovery::new(),
             enabled,
         }
+    }
+
+    /// Set specific addresses to scan for IDN servers.
+    ///
+    /// When set, the scanner will scan these specific addresses instead of
+    /// using broadcast discovery. This is useful for testing with mock servers.
+    ///
+    /// This method is only available with the `testutils` feature.
+    #[cfg(all(feature = "idn", feature = "testutils"))]
+    pub fn set_idn_scan_addresses(&mut self, addresses: Vec<SocketAddr>) {
+        self.idn_scan_addresses = addresses;
     }
 
     /// Update which DAC types to scan for.
@@ -533,7 +681,22 @@ impl DacDiscovery {
         // IDN
         #[cfg(feature = "idn")]
         if self.enabled.is_enabled(DacType::Idn) {
-            devices.extend(self.idn.scan());
+            #[cfg(feature = "testutils")]
+            {
+                if self.idn_scan_addresses.is_empty() {
+                    // Use broadcast discovery
+                    devices.extend(self.idn.scan());
+                } else {
+                    // Scan specific addresses (for testing with mock servers)
+                    for addr in &self.idn_scan_addresses {
+                        devices.extend(self.idn.scan_address(*addr));
+                    }
+                }
+            }
+            #[cfg(not(feature = "testutils"))]
+            {
+                devices.extend(self.idn.scan());
+            }
         }
 
         // LaserCube WiFi

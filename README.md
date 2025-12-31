@@ -23,7 +23,7 @@ This crate does not apply any additional processing on points (like blanking), e
 | DAC                        | Connection | Features | Verified |
 | -------------------------- | ---------- | -------- | -------- |
 | Helios                     | USB        | 12-bit   | ✅       |
-| Ether Dream                | Network    | 16-bit   | ❌       |
+| Ether Dream                | Network    | 16-bit   | ✅       |
 | IDN (ILDA Digital Network) | Network    | 16-bit   | ✅       |
 | LaserCube WiFi             | WiFi       | 16-bit   | ❌       |
 | LaserCube USB / Laserdock  | USB        | 12-bit   | ✅       |
@@ -51,26 +51,34 @@ There are two discovery APIs:
 
 `DacDiscoveryWorker` runs a background thread that:
 
-1. **Scans periodically** (default: every 2 seconds, configurable via `set_discovery_interval()`) for new devices across all enabled DAC types
-2. **Tracks known devices** to avoid duplicate connections
-3. **Automatic reconnection** - when a device connection fails, it's removed from tracking and will reconnect on the next scan
+1. **Scans periodically** (default: every 2 seconds, configurable via `discovery_interval()`) for new devices across all enabled DAC types
+2. **Reports all discovered devices** via `poll_discovered_devices()` regardless of filter
+3. **Auto-connects to filtered devices** and yields ready-to-use workers via `poll_new_workers()`
+4. **Automatic reconnection** - when a device connection fails, it's removed from tracking and will reconnect on the next scan
 
 Multiple devices of the same type are supported - each is identified by a unique name (MAC address for Ether Dream, serial number for LaserCube, etc.)
 
-You can also provide a device filter predicate to allowlist devices before the worker connects:
+You can provide a device filter predicate to control which devices are auto-connected:
 
 ```rust
 use laser_dac::{DacDiscoveryWorker, DacType, EnabledDacTypes};
+use std::time::Duration;
 
-let discovery = DacDiscoveryWorker::new_with_device_filter(
-    EnabledDacTypes::all(),
-    |device| device.dac_type() == DacType::EtherDream,
-);
+let discovery = DacDiscoveryWorker::builder()
+    .enabled_types(EnabledDacTypes::all())
+    .device_filter(|info| info.dac_type == DacType::EtherDream)
+    .discovery_interval(Duration::from_secs(1))
+    .build();
 
-// Update the predicate later while the worker is running.
-discovery.set_device_filter(|device| {
-    device.dac_type() == DacType::EtherDream && device.name().starts_with("ED-")
-});
+// All discovered devices are visible, even those not matching the filter
+for device in discovery.poll_discovered_devices() {
+    println!("Found: {} ({:?})", device.name(), device.dac_type);
+}
+
+// Only filtered devices become workers
+for worker in discovery.poll_new_workers() {
+    println!("Connected: {}", worker.device_name());
+}
 ```
 
 ## Coordinate System
@@ -114,7 +122,7 @@ For example, to enable only network DACs:
 
 ```toml
 [dependencies]
-laser-dac = { version = "0.3", default-features = false, features = ["network-dacs"] }
+laser-dac = { version = "*", default-features = false, features = ["network-dacs"] }
 ```
 
 ### Other Features

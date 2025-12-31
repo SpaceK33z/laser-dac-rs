@@ -42,8 +42,8 @@ pub use error::{Error, Result};
 pub use backend::{DacBackend, WriteResult};
 
 // Discovery and worker types
-pub use discovery::{DacDiscovery, DiscoveredDevice};
-pub use discovery_worker::DacDiscoveryWorker;
+pub use discovery::{DacDiscovery, DiscoveredDevice, DiscoveredDeviceInfo};
+pub use discovery_worker::{DacDiscoveryWorker, DacDiscoveryWorkerBuilder};
 pub use worker::DacWorker;
 
 // Types

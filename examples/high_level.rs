@@ -18,7 +18,9 @@ fn main() {
     let args = Args::parse();
 
     println!("Starting DAC discovery...");
-    let discovery = DacDiscoveryWorker::new(EnabledDacTypes::all());
+    let discovery = DacDiscoveryWorker::builder()
+        .enabled_types(EnabledDacTypes::all())
+        .build();
 
     let mut workers = Vec::new();
     println!("Scanning for 5 seconds...\n");

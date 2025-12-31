@@ -307,4 +307,126 @@ impl ServerScanner {
         self.sequence = self.sequence.wrapping_add(1);
         seq
     }
+
+    /// Scan a specific address for IDN servers.
+    ///
+    /// This is useful for testing with mock servers on localhost where
+    /// broadcast won't work.
+    ///
+    /// # Arguments
+    ///
+    /// * `addr` - The specific address to scan
+    /// * `timeout` - How long to wait for responses
+    pub fn scan_address(
+        &mut self,
+        addr: SocketAddr,
+        timeout: Duration,
+    ) -> io::Result<Vec<ServerInfo>> {
+        let start = Instant::now();
+
+        let mut servers: HashMap<[u8; 16], ServerInfo> = HashMap::new();
+        let mut addr_to_unit: HashMap<SocketAddr, [u8; 16]> = HashMap::new();
+
+        // Send scan request to specific address
+        self.send_scan_to(addr)?;
+
+        // Set socket timeout for receiving
+        let recv_timeout = Duration::from_millis(100);
+        self.socket.set_read_timeout(Some(recv_timeout))?;
+
+        // Collect scan responses
+        while start.elapsed() < timeout {
+            match self.recv_scan_response_with_port() {
+                Ok((response, src_addr)) => {
+                    // Use the actual source address (including port) for non-broadcast scans
+                    // This allows testing with mock servers on non-standard ports
+                    let response_addr = src_addr;
+
+                    if let Some(unit_id) = addr_to_unit.get(&response_addr) {
+                        if let Some(server) = servers.get_mut(unit_id) {
+                            if !server.addresses.contains(&response_addr) {
+                                server.addresses.push(response_addr);
+                            }
+                        }
+                    } else {
+                        let entry = servers.entry(response.unit_id).or_insert_with(|| {
+                            ServerInfo::new(
+                                response.unit_id,
+                                response.hostname_str().to_string(),
+                                (
+                                    response.protocol_version >> 4,
+                                    response.protocol_version & 0x0F,
+                                ),
+                                response.status,
+                            )
+                        });
+
+                        if !entry.addresses.contains(&response_addr) {
+                            entry.addresses.push(response_addr);
+                        }
+                        addr_to_unit.insert(response_addr, response.unit_id);
+                    }
+                }
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
+                Err(e) if e.kind() == io::ErrorKind::TimedOut => continue,
+                Err(_) => {}
+            }
+        }
+
+        // Query service maps
+        for server in servers.values_mut() {
+            if let Some(&addr) = server.addresses.first() {
+                let _ = self.query_service_map(server, addr);
+            }
+        }
+
+        debug!(
+            "IDN: scan_address complete, found {} servers",
+            servers.len()
+        );
+        Ok(servers.into_values().collect())
+    }
+
+    /// Receive and parse a scan response, returning the full source address.
+    fn recv_scan_response_with_port(&mut self) -> io::Result<(ScanResponse, SocketAddr)> {
+        let (len, src_addr) = self.socket.recv_from(&mut self.buffer)?;
+
+        if len < PacketHeader::SIZE_BYTES + ScanResponse::SIZE_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("packet too small: {} bytes", len),
+            ));
+        }
+
+        let mut cursor = &self.buffer[..len];
+
+        let header: PacketHeader = cursor.read_bytes()?;
+
+        if header.command != IDNCMD_SCAN_RESPONSE {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unexpected command: 0x{:02x}", header.command),
+            ));
+        }
+
+        let response: ScanResponse = cursor.read_bytes()?;
+
+        Ok((response, src_addr))
+    }
+
+    /// Send scan request to a specific address.
+    fn send_scan_to(&mut self, addr: SocketAddr) -> io::Result<()> {
+        let seq = self.next_sequence();
+        let header = PacketHeader {
+            command: IDNCMD_SCAN_REQUEST,
+            flags: self.client_group,
+            sequence: seq,
+        };
+
+        let mut packet = Vec::with_capacity(PacketHeader::SIZE_BYTES);
+        packet.write_bytes(header)?;
+
+        self.socket.send_to(&packet, addr)?;
+        Ok(())
+    }
 }

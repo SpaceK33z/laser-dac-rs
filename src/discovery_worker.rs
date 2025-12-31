@@ -6,280 +6,301 @@
 //! # Example
 //!
 //! ```ignore
-//! use laser_dac::{DacDiscoveryWorker, EnabledDacTypes, LaserFrame};
+//! use laser_dac::{DacDiscoveryWorker, EnabledDacTypes};
 //! use std::time::Duration;
 //! use std::thread;
 //!
-//! // Create discovery worker
-//! let discovery = DacDiscoveryWorker::new(EnabledDacTypes::all());
+//! // Create discovery worker with builder
+//! let discovery = DacDiscoveryWorker::builder()
+//!     .enabled_types(EnabledDacTypes::all())
+//!     .device_filter(|info| info.name().contains("preferred"))
+//!     .discovery_interval(Duration::from_secs(1))
+//!     .build();
 //!
-//! // Collect workers as they're discovered
-//! let mut workers = Vec::new();
-//! for _ in 0..50 {
-//!     for worker in discovery.poll_new_workers() {
-//!         println!("Found: {}", worker.device_name());
-//!         workers.push(worker);
-//!     }
-//!     thread::sleep(Duration::from_millis(100));
+//! // Poll for all discovered devices (regardless of filter)
+//! for device in discovery.poll_discovered_devices() {
+//!     println!("Found: {} ({:?})", device.name(), device.dac_type);
+//! }
+//!
+//! // Poll for connected workers (only devices that passed filter)
+//! for worker in discovery.poll_new_workers() {
+//!     println!("Connected: {}", worker.device_name());
 //! }
 //! ```
 
 use std::collections::HashSet;
+#[cfg(all(feature = "idn", feature = "testutils"))]
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::discovery::DacDiscovery;
-use crate::discovery::DiscoveredDevice;
+use crate::discovery::DiscoveredDeviceInfo;
 use crate::types::EnabledDacTypes;
 use crate::worker::{DacWorker, DisconnectNotifier};
 
-type DeviceFilter = dyn Fn(&DiscoveredDevice) -> bool + Send + Sync + 'static;
+type DeviceFilter = dyn Fn(&DiscoveredDeviceInfo) -> bool + Send + Sync + 'static;
 
 /// How often to scan for DAC devices.
-const DISCOVERY_INTERVAL: Duration = Duration::from_secs(2);
+const DEFAULT_DISCOVERY_INTERVAL: Duration = Duration::from_secs(2);
 
-/// Shared configuration for the discovery loop thread.
-struct SharedConfig {
-    enabled_types: Arc<Mutex<EnabledDacTypes>>,
-    device_filter: Arc<Mutex<Arc<DeviceFilter>>>,
-    discovery_interval: Arc<Mutex<Duration>>,
-}
-
-fn allow_all_devices(_: &DiscoveredDevice) -> bool {
+fn allow_all_devices(_: &DiscoveredDeviceInfo) -> bool {
     true
 }
 
-/// Background worker that discovers DAC devices without blocking the main thread.
+/// Builder for `DacDiscoveryWorker`.
 ///
-/// USB enumeration and device opening happen in a dedicated thread. Newly discovered
-/// devices are sent back as ready-to-use `DacWorker` handles.
-///
-/// Discovery can be configured to only scan for specific DAC types.
-pub struct DacDiscoveryWorker {
-    worker_rx: Receiver<DacWorker>,
-    enabled_types: Arc<Mutex<EnabledDacTypes>>,
-    device_filter: Arc<Mutex<Arc<DeviceFilter>>>,
-    discovery_interval: Arc<Mutex<Duration>>,
-    disconnect_tx: Sender<String>,
-    _running: Arc<AtomicBool>,
-    _handle: JoinHandle<()>,
+/// Use `DacDiscoveryWorker::builder()` to create a new builder.
+pub struct DacDiscoveryWorkerBuilder {
+    enabled_types: EnabledDacTypes,
+    device_filter: Option<Arc<DeviceFilter>>,
+    discovery_interval: Duration,
+    #[cfg(all(feature = "idn", feature = "testutils"))]
+    idn_scan_addresses: Vec<SocketAddr>,
 }
 
-impl DacDiscoveryWorker {
-    /// Creates a new discovery worker with the given enabled DAC types.
-    ///
-    /// This initializes USB controllers, so it should be called from the main thread.
-    pub fn new(enabled_types: EnabledDacTypes) -> Self {
-        Self::new_with_device_filter(enabled_types, allow_all_devices)
-    }
-
-    /// Creates a new discovery worker with a device filter predicate.
-    ///
-    /// Devices that do not match the predicate will be ignored.
-    pub fn new_with_device_filter<F>(enabled_types: EnabledDacTypes, filter: F) -> Self
-    where
-        F: Fn(&DiscoveredDevice) -> bool + Send + Sync + 'static,
-    {
-        let (worker_tx, worker_rx) = mpsc::channel::<DacWorker>();
-        let (disconnect_tx, disconnect_rx) = mpsc::channel::<String>();
-        let enabled_types = Arc::new(Mutex::new(enabled_types));
-        let enabled_types_clone = Arc::clone(&enabled_types);
-        let device_filter = Arc::new(Mutex::new(Arc::new(filter) as Arc<DeviceFilter>));
-        let device_filter_clone = Arc::clone(&device_filter);
-        let discovery_interval = Arc::new(Mutex::new(DISCOVERY_INTERVAL));
-        let discovery_interval_clone = Arc::clone(&discovery_interval);
-        let running = Arc::new(AtomicBool::new(true));
-        let running_clone = Arc::clone(&running);
-
-        // Create dac discovery on main thread (USB controller init)
-        let discovery =
-            DacDiscovery::new(enabled_types.lock().map(|e| e.clone()).unwrap_or_default());
-
-        let disconnect_tx_for_loop = disconnect_tx.clone();
-        let shared_config = SharedConfig {
-            enabled_types: enabled_types_clone,
-            device_filter: device_filter_clone,
-            discovery_interval: discovery_interval_clone,
-        };
-
-        let handle = thread::spawn(move || {
-            Self::discovery_loop(
-                discovery,
-                worker_tx,
-                disconnect_tx_for_loop,
-                disconnect_rx,
-                shared_config,
-                running_clone,
-            );
-        });
-
+impl DacDiscoveryWorkerBuilder {
+    /// Creates a new builder with default settings.
+    pub fn new() -> Self {
         Self {
-            worker_rx,
-            enabled_types,
-            device_filter,
-            discovery_interval,
-            disconnect_tx,
-            _running: running,
-            _handle: handle,
+            enabled_types: EnabledDacTypes::default(),
+            device_filter: None,
+            discovery_interval: DEFAULT_DISCOVERY_INTERVAL,
+            #[cfg(all(feature = "idn", feature = "testutils"))]
+            idn_scan_addresses: Vec::new(),
         }
     }
 
-    /// Polls for newly discovered DAC workers.
-    ///
-    /// Returns an iterator of `DacWorker` handles that were discovered since the
-    /// last call. These workers are already connected and ready to receive frames.
-    pub fn poll_new_workers(&self) -> impl Iterator<Item = DacWorker> + '_ {
-        std::iter::from_fn(|| self.worker_rx.try_recv().ok())
+    /// Sets which DAC types to scan for.
+    pub fn enabled_types(mut self, types: EnabledDacTypes) -> Self {
+        self.enabled_types = types;
+        self
     }
 
-    /// Updates the enabled DAC types.
+    /// Sets a filter predicate for auto-connecting to devices.
     ///
-    /// Changes take effect on the next discovery cycle.
-    pub fn set_enabled_types(&self, types: EnabledDacTypes) {
-        if let Ok(mut enabled) = self.enabled_types.lock() {
-            *enabled = types;
-        }
-    }
-
-    /// Returns the currently enabled DAC types.
-    pub fn enabled_types(&self) -> EnabledDacTypes {
-        self.enabled_types
-            .lock()
-            .map(|e| e.clone())
-            .unwrap_or_default()
-    }
-
-    /// Updates the device filter predicate.
-    ///
-    /// Changes take effect on the next discovery cycle.
-    pub fn set_device_filter<F>(&self, filter: F)
+    /// Devices that return `false` from the filter will still be reported via
+    /// `poll_discovered_devices()`, but will not be automatically connected
+    /// (and thus won't appear in `poll_new_workers()`).
+    pub fn device_filter<F>(mut self, filter: F) -> Self
     where
-        F: Fn(&DiscoveredDevice) -> bool + Send + Sync + 'static,
+        F: Fn(&DiscoveredDeviceInfo) -> bool + Send + Sync + 'static,
     {
-        if let Ok(mut device_filter) = self.device_filter.lock() {
-            *device_filter = Arc::new(filter);
-        }
-    }
-
-    /// Clears the device filter, allowing all discovered devices.
-    pub fn clear_device_filter(&self) {
-        if let Ok(mut device_filter) = self.device_filter.lock() {
-            *device_filter = Arc::new(allow_all_devices);
-        }
+        self.device_filter = Some(Arc::new(filter));
+        self
     }
 
     /// Sets the discovery scan interval.
     ///
-    /// Changes take effect on the next discovery cycle. Defaults to 2 seconds.
-    pub fn set_discovery_interval(&self, interval: Duration) {
-        if let Ok(mut discovery_interval) = self.discovery_interval.lock() {
-            *discovery_interval = interval;
-        }
+    /// Defaults to 2 seconds.
+    pub fn discovery_interval(mut self, interval: Duration) -> Self {
+        self.discovery_interval = interval;
+        self
     }
 
-    /// Returns the current discovery scan interval.
-    pub fn discovery_interval(&self) -> Duration {
-        self.discovery_interval
-            .lock()
-            .map(|d| *d)
-            .unwrap_or(DISCOVERY_INTERVAL)
-    }
-
-    /// Marks a device as disconnected, allowing it to be rediscovered.
+    /// Sets specific addresses to scan for IDN servers.
     ///
-    /// Call this when a `DacWorker` enters the `DacConnectionState::Lost` state
-    /// to allow the discovery worker to reconnect to the device.
-    pub fn mark_disconnected(&self, device_name: &str) {
-        let _ = self.disconnect_tx.send(device_name.to_string());
+    /// When set, the scanner will scan these specific addresses instead of
+    /// using broadcast discovery. This is useful for testing with mock servers
+    /// on localhost.
+    ///
+    /// This method is only available with the `testutils` feature.
+    #[cfg(all(feature = "idn", feature = "testutils"))]
+    pub fn idn_scan_addresses(mut self, addresses: Vec<SocketAddr>) -> Self {
+        self.idn_scan_addresses = addresses;
+        self
     }
 
-    /// The main discovery loop that runs in the background thread.
-    fn discovery_loop(
-        mut discovery: DacDiscovery,
-        worker_tx: mpsc::Sender<DacWorker>,
-        disconnect_tx: DisconnectNotifier,
-        disconnect_rx: Receiver<String>,
-        config: SharedConfig,
-        running: Arc<AtomicBool>,
-    ) {
-        let mut known_devices: HashSet<String> = HashSet::new();
-        let mut last_discovery = Instant::now() - DISCOVERY_INTERVAL;
+    /// Builds the `DacDiscoveryWorker`.
+    ///
+    /// This initializes USB controllers, so it should be called from the main thread.
+    pub fn build(self) -> DacDiscoveryWorker {
+        let (worker_tx, worker_rx) = mpsc::channel::<DacWorker>();
+        let (device_tx, device_rx) = mpsc::channel::<DiscoveredDeviceInfo>();
+        let (disconnect_tx, disconnect_rx) = mpsc::channel::<String>();
+        let running = Arc::new(AtomicBool::new(true));
+        let running_clone = Arc::clone(&running);
 
-        while running.load(Ordering::Relaxed) {
-            // Get current discovery interval
-            let interval = config
-                .discovery_interval
-                .lock()
-                .map(|d| *d)
-                .unwrap_or(DISCOVERY_INTERVAL);
+        let device_filter = self
+            .device_filter
+            .unwrap_or_else(|| Arc::new(allow_all_devices));
 
-            // Sleep until next discovery interval
-            let elapsed = last_discovery.elapsed();
-            if elapsed < interval {
-                thread::sleep(interval - elapsed);
-            }
-            last_discovery = Instant::now();
+        // Create dac discovery on main thread (USB controller init)
+        #[allow(unused_mut)] // mut only needed with testutils feature
+        let mut discovery = DacDiscovery::new(self.enabled_types.clone());
 
-            // Process disconnect notifications
-            while let Ok(device_name) = disconnect_rx.try_recv() {
-                known_devices.remove(&device_name);
-            }
-
-            // Update enabled types
-            if let Ok(enabled) = config.enabled_types.lock() {
-                discovery.set_enabled(enabled.clone());
-            }
-
-            // Scan for devices
-            let devices = discovery.scan();
-            let filter = config
-                .device_filter
-                .lock()
-                .map(|f| Arc::clone(&*f))
-                .unwrap_or_else(|_| Arc::new(allow_all_devices));
-            for device in devices {
-                let name = device.name().to_string();
-                let dac_type = device.dac_type();
-
-                // Skip already-known devices
-                if known_devices.contains(&name) {
-                    continue;
-                }
-
-                // Skip filtered devices
-                if !filter(&device) {
-                    continue;
-                }
-
-                // Try to connect
-                match discovery.connect(device) {
-                    Ok(backend) => {
-                        let worker = DacWorker::new_with_disconnect_notifier(
-                            name.clone(),
-                            dac_type,
-                            backend,
-                            disconnect_tx.clone(),
-                        );
-                        if worker_tx.send(worker).is_err() {
-                            // Receiver dropped, exit
-                            return;
-                        }
-                        known_devices.insert(name);
-                    }
-                    Err(_) => {
-                        // Connection failed, will retry on next scan
-                    }
-                }
-            }
+        // Set IDN scan addresses if configured
+        #[cfg(all(feature = "idn", feature = "testutils"))]
+        if !self.idn_scan_addresses.is_empty() {
+            discovery.set_idn_scan_addresses(self.idn_scan_addresses);
         }
+
+        let disconnect_tx_for_loop = disconnect_tx.clone();
+        let enabled_types = self.enabled_types;
+        let discovery_interval = self.discovery_interval;
+
+        let handle = thread::spawn(move || {
+            discovery_loop(
+                discovery,
+                worker_tx,
+                device_tx,
+                disconnect_tx_for_loop,
+                disconnect_rx,
+                enabled_types,
+                device_filter,
+                discovery_interval,
+                running_clone,
+            );
+        });
+
+        DacDiscoveryWorker {
+            worker_rx,
+            device_rx,
+            running,
+            handle: Some(handle),
+        }
+    }
+}
+
+impl Default for DacDiscoveryWorkerBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Background worker that discovers DAC devices without blocking the main thread.
+///
+/// USB enumeration and device opening happen in a dedicated thread. All discovered
+/// devices are reported via `poll_discovered_devices()`, while only devices that
+/// pass the filter are automatically connected and available via `poll_new_workers()`.
+///
+/// Use `DacDiscoveryWorker::builder()` to create and configure a new worker.
+///
+/// The background thread is automatically stopped when the worker is dropped.
+pub struct DacDiscoveryWorker {
+    worker_rx: Receiver<DacWorker>,
+    device_rx: Receiver<DiscoveredDeviceInfo>,
+    running: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl DacDiscoveryWorker {
+    /// Creates a new builder for configuring the discovery worker.
+    pub fn builder() -> DacDiscoveryWorkerBuilder {
+        DacDiscoveryWorkerBuilder::new()
+    }
+
+    /// Polls for newly discovered devices.
+    ///
+    /// Returns an iterator of `DiscoveredDeviceInfo` for all devices discovered
+    /// since the last call, regardless of whether they pass the device filter.
+    pub fn poll_discovered_devices(&self) -> impl Iterator<Item = DiscoveredDeviceInfo> + '_ {
+        std::iter::from_fn(|| self.device_rx.try_recv().ok())
+    }
+
+    /// Polls for newly connected DAC workers.
+    ///
+    /// Returns an iterator of `DacWorker` handles for devices that were discovered
+    /// and passed the device filter since the last call. These workers are already
+    /// connected and ready to receive frames.
+    pub fn poll_new_workers(&self) -> impl Iterator<Item = DacWorker> + '_ {
+        std::iter::from_fn(|| self.worker_rx.try_recv().ok())
     }
 }
 
 impl Default for DacDiscoveryWorker {
     fn default() -> Self {
-        Self::new(EnabledDacTypes::default())
+        DacDiscoveryWorkerBuilder::new().build()
+    }
+}
+
+impl Drop for DacDiscoveryWorker {
+    fn drop(&mut self) {
+        self.running.store(false, Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+/// The main discovery loop that runs in the background thread.
+#[allow(clippy::too_many_arguments)]
+fn discovery_loop(
+    mut discovery: DacDiscovery,
+    worker_tx: Sender<DacWorker>,
+    device_tx: Sender<DiscoveredDeviceInfo>,
+    disconnect_tx: DisconnectNotifier,
+    disconnect_rx: Receiver<String>,
+    enabled_types: EnabledDacTypes,
+    device_filter: Arc<DeviceFilter>,
+    discovery_interval: Duration,
+    running: Arc<AtomicBool>,
+) {
+    let mut reported_devices: HashSet<String> = HashSet::new();
+    let mut last_discovery = Instant::now() - discovery_interval;
+
+    // Set initial enabled types
+    discovery.set_enabled(enabled_types);
+
+    while running.load(Ordering::Relaxed) {
+        // Sleep until next discovery interval
+        let elapsed = last_discovery.elapsed();
+        if elapsed < discovery_interval {
+            thread::sleep(discovery_interval - elapsed);
+        }
+        last_discovery = Instant::now();
+
+        // Process disconnect notifications
+        while let Ok(device_name) = disconnect_rx.try_recv() {
+            reported_devices.remove(&device_name);
+        }
+
+        // Scan for devices
+        let devices = discovery.scan();
+        for device in devices {
+            let info = device.info();
+
+            let name = info.name();
+
+            // Skip already-reported devices
+            if reported_devices.contains(&name) {
+                continue;
+            }
+
+            // Always report discovered device (once)
+            if device_tx.send(info.clone()).is_err() {
+                // Receiver dropped, exit
+                return;
+            }
+            reported_devices.insert(name.clone());
+
+            // Only connect if filter passes
+            if !device_filter(&info) {
+                continue;
+            }
+
+            // Try to connect
+            match discovery.connect(device) {
+                Ok(backend) => {
+                    let worker = DacWorker::new_with_disconnect_notifier(
+                        name.clone(),
+                        info.dac_type,
+                        backend,
+                        disconnect_tx.clone(),
+                    );
+                    if worker_tx.send(worker).is_err() {
+                        // Receiver dropped, exit
+                        return;
+                    }
+                }
+                Err(_) => {
+                    // Connection failed, remove from reported so we can retry next cycle
+                    reported_devices.remove(&name);
+                }
+            }
+        }
     }
 }

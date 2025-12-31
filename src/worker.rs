@@ -67,6 +67,8 @@ pub struct DacWorker {
     status_rx: MpscReceiver<WorkerStatus>,
     handle: Option<JoinHandle<()>>,
     state: DacConnectionState,
+    /// Optional channel to notify discovery worker when this worker is dropped.
+    disconnect_tx: Option<DisconnectNotifier>,
 }
 
 impl DacWorker {
@@ -97,8 +99,15 @@ impl DacWorker {
         let (status_tx, status_rx) = mpsc::channel::<WorkerStatus>();
 
         let name_for_loop = device_name.clone();
+        let disconnect_tx_for_loop = disconnect_tx.clone();
         let handle = thread::spawn(move || {
-            Self::worker_loop(backend, command_rx, status_tx, name_for_loop, disconnect_tx);
+            Self::worker_loop(
+                backend,
+                command_rx,
+                status_tx,
+                name_for_loop,
+                disconnect_tx_for_loop,
+            );
         });
 
         Self {
@@ -108,6 +117,7 @@ impl DacWorker {
             status_rx,
             handle: Some(handle),
             state: DacConnectionState::Connected { name: device_name },
+            disconnect_tx,
         }
     }
 
@@ -233,5 +243,9 @@ impl DacWorker {
 impl Drop for DacWorker {
     fn drop(&mut self) {
         let _ = self.command_tx.try_send(WorkerCommand::Stop);
+        // Notify discovery worker so device can be rediscovered
+        if let Some(ref tx) = self.disconnect_tx {
+            let _ = tx.send(self.device_name.clone());
+        }
     }
 }

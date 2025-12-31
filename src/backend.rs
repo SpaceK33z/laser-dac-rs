@@ -479,7 +479,9 @@ pub use ether_dream_backend::EtherDreamBackend;
 mod idn_backend {
     use super::*;
     use crate::protocols::idn::dac::{stream, ServerInfo, ServiceInfo};
+    use crate::protocols::idn::error::{CommunicationError, ResponseError};
     use crate::protocols::idn::protocol::PointXyrgbi;
+    use std::time::Duration;
 
     /// IDN DAC backend (ILDA Digital Network).
     pub struct IdnBackend {
@@ -530,6 +532,20 @@ mod idn_backend {
                 .stream
                 .as_mut()
                 .ok_or_else(|| Error::msg("Not connected"))?;
+
+            // Check if we need to send keepalive to verify server is still reachable
+            // (IDN uses UDP, so write_frame won't detect connection loss)
+            if stream.needs_keepalive() {
+                match stream.ping(Duration::from_millis(200)) {
+                    Ok(_) => {} // Server is alive
+                    Err(CommunicationError::Response(ResponseError::Timeout)) => {
+                        return Err(Error::msg("Connection lost: ping timeout"));
+                    }
+                    Err(e) => {
+                        return Err(Error::context("Connection lost", e));
+                    }
+                }
+            }
 
             stream.set_scan_speed(frame.pps);
             let points: Vec<PointXyrgbi> = frame.points.iter().map(|p| p.into()).collect();
