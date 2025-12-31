@@ -55,6 +55,14 @@ pub const IDNFLG_SCAN_STATUS_EXCLUDED: u8 = 0x20;
 pub const IDNFLG_SCAN_STATUS_OCCUPIED: u8 = 0x10;
 pub const IDNFLG_SCAN_STATUS_REALTIME: u8 = 0x01;
 
+// Group operation codes (idn-hello.h:84-89)
+pub const IDNVAL_GROUPOP_SUCCESS: i8 = 0x00;
+pub const IDNVAL_GROUPOP_GETMASK: i8 = 0x01;
+pub const IDNVAL_GROUPOP_SETMASK: i8 = 0x02;
+pub const IDNVAL_GROUPOP_ERR_AUTH: i8 = -3; // 0xFD
+pub const IDNVAL_GROUPOP_ERR_OPERATION: i8 = -2; // 0xFE
+pub const IDNVAL_GROUPOP_ERR_REQUEST: i8 = -1; // 0xFF
+
 // Service types
 pub const IDNVAL_STYPE_RELAY: u8 = 0x00;
 pub const IDNVAL_STYPE_UART: u8 = 0x04;
@@ -497,37 +505,37 @@ impl SizeBytes for SampleChunkHeader {
 }
 
 // -------------------------------------------------------------------------------------------------
-//  Acknowledgment Response (8 bytes)
+//  Acknowledgment Response (10 bytes)
 // -------------------------------------------------------------------------------------------------
 
 /// Acknowledgment response from the server (spec section 6.3.3).
 #[repr(C)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct AcknowledgeResponse {
+    /// Size of this struct (always 10)
+    pub struct_size: u8,
     /// Result code: 0 = success, negative = error (see IDNVAL_RTACK_ERR_*)
     pub result_code: i8,
     /// Input event flags (e.g., interlock triggered)
-    pub input_event_flags: u8,
+    pub input_event_flags: u16,
     /// Pipeline event flags (e.g., buffer underflow)
-    pub pipeline_event_flags: u8,
+    pub pipeline_event_flags: u16,
     /// Status flags (e.g., projector ready)
     pub status_flags: u8,
     /// Link quality (0-255, higher is better)
     pub link_quality: u8,
-    /// Reserved byte
-    pub reserved: u8,
     /// Latency in microseconds (server processing time)
     pub latency_us: u16,
 }
 
 impl WriteToBytes for AcknowledgeResponse {
     fn write_to_bytes<W: WriteBytesExt>(&self, mut writer: W) -> io::Result<()> {
+        writer.write_u8(self.struct_size)?;
         writer.write_i8(self.result_code)?;
-        writer.write_u8(self.input_event_flags)?;
-        writer.write_u8(self.pipeline_event_flags)?;
+        writer.write_u16::<BE>(self.input_event_flags)?;
+        writer.write_u16::<BE>(self.pipeline_event_flags)?;
         writer.write_u8(self.status_flags)?;
         writer.write_u8(self.link_quality)?;
-        writer.write_u8(self.reserved)?;
         writer.write_u16::<BE>(self.latency_us)?;
         Ok(())
     }
@@ -535,27 +543,27 @@ impl WriteToBytes for AcknowledgeResponse {
 
 impl ReadFromBytes for AcknowledgeResponse {
     fn read_from_bytes<R: ReadBytesExt>(mut reader: R) -> io::Result<Self> {
+        let struct_size = reader.read_u8()?;
         let result_code = reader.read_i8()?;
-        let input_event_flags = reader.read_u8()?;
-        let pipeline_event_flags = reader.read_u8()?;
+        let input_event_flags = reader.read_u16::<BE>()?;
+        let pipeline_event_flags = reader.read_u16::<BE>()?;
         let status_flags = reader.read_u8()?;
         let link_quality = reader.read_u8()?;
-        let reserved = reader.read_u8()?;
         let latency_us = reader.read_u16::<BE>()?;
         Ok(AcknowledgeResponse {
+            struct_size,
             result_code,
             input_event_flags,
             pipeline_event_flags,
             status_flags,
             link_quality,
-            reserved,
             latency_us,
         })
     }
 }
 
 impl SizeBytes for AcknowledgeResponse {
-    const SIZE_BYTES: usize = 8;
+    const SIZE_BYTES: usize = 10;
 }
 
 impl AcknowledgeResponse {
@@ -571,69 +579,143 @@ impl AcknowledgeResponse {
 }
 
 // -------------------------------------------------------------------------------------------------
-//  Client Group Request/Response (2 bytes payload)
+//  Client Group Request/Response (idn-hello.h:124-140)
 // -------------------------------------------------------------------------------------------------
 
-/// Client group request payload for get/set operations.
+/// Client group request payload for get/set operations (16 bytes).
 /// Sent with IDNCMD_GROUP_REQUEST, response via IDNCMD_GROUP_RESPONSE.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct GroupRequest {
-    /// For GET: 0; For SET: new mask value
-    pub mask: u16,
+    /// Size of this struct (always 16)
+    pub struct_size: u8,
+    /// Operation code: GETMASK (0x01) or SETMASK (0x02)
+    pub op_code: i8,
+    /// Mask for the client groups
+    pub group_mask: u16,
+    /// Authentication code, padded with '\0'
+    pub auth_code: [u8; 12],
+}
+
+impl GroupRequest {
+    /// Create a GET request to retrieve the current group mask.
+    pub fn get() -> Self {
+        Self {
+            struct_size: 16,
+            op_code: IDNVAL_GROUPOP_GETMASK,
+            group_mask: 0,
+            auth_code: [0u8; 12],
+        }
+    }
+
+    /// Create a SET request to change the group mask.
+    pub fn set(mask: u16) -> Self {
+        Self {
+            struct_size: 16,
+            op_code: IDNVAL_GROUPOP_SETMASK,
+            group_mask: mask,
+            auth_code: [0u8; 12],
+        }
+    }
+
+    /// Create a SET request with authentication.
+    pub fn set_with_auth(mask: u16, auth: &[u8]) -> Self {
+        let mut auth_code = [0u8; 12];
+        let len = auth.len().min(12);
+        auth_code[..len].copy_from_slice(&auth[..len]);
+        Self {
+            struct_size: 16,
+            op_code: IDNVAL_GROUPOP_SETMASK,
+            group_mask: mask,
+            auth_code,
+        }
+    }
 }
 
 impl WriteToBytes for GroupRequest {
     fn write_to_bytes<W: WriteBytesExt>(&self, mut writer: W) -> io::Result<()> {
-        writer.write_u16::<BE>(self.mask)?;
+        writer.write_u8(self.struct_size)?;
+        writer.write_i8(self.op_code)?;
+        writer.write_u16::<BE>(self.group_mask)?;
+        for &byte in &self.auth_code {
+            writer.write_u8(byte)?;
+        }
         Ok(())
     }
 }
 
 impl ReadFromBytes for GroupRequest {
     fn read_from_bytes<R: ReadBytesExt>(mut reader: R) -> io::Result<Self> {
-        let mask = reader.read_u16::<BE>()?;
-        Ok(GroupRequest { mask })
+        let struct_size = reader.read_u8()?;
+        let op_code = reader.read_i8()?;
+        let group_mask = reader.read_u16::<BE>()?;
+        let mut auth_code = [0u8; 12];
+        for byte in &mut auth_code {
+            *byte = reader.read_u8()?;
+        }
+        Ok(GroupRequest {
+            struct_size,
+            op_code,
+            group_mask,
+            auth_code,
+        })
     }
 }
 
 impl SizeBytes for GroupRequest {
-    const SIZE_BYTES: usize = 2;
+    const SIZE_BYTES: usize = 16;
 }
 
-/// Client group response payload.
+/// Client group response payload (4 bytes).
 #[repr(C)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct GroupResponse {
+    /// Size of this struct (always 4)
+    pub struct_size: u8,
+    /// Operation result: success (>=0) or error (<0)
+    pub op_code: i8,
     /// Current client group mask (16 bits, one per group 0-15)
-    pub mask: u16,
+    pub group_mask: u16,
 }
 
 impl WriteToBytes for GroupResponse {
     fn write_to_bytes<W: WriteBytesExt>(&self, mut writer: W) -> io::Result<()> {
-        writer.write_u16::<BE>(self.mask)?;
+        writer.write_u8(self.struct_size)?;
+        writer.write_i8(self.op_code)?;
+        writer.write_u16::<BE>(self.group_mask)?;
         Ok(())
     }
 }
 
 impl ReadFromBytes for GroupResponse {
     fn read_from_bytes<R: ReadBytesExt>(mut reader: R) -> io::Result<Self> {
-        let mask = reader.read_u16::<BE>()?;
-        Ok(GroupResponse { mask })
+        let struct_size = reader.read_u8()?;
+        let op_code = reader.read_i8()?;
+        let group_mask = reader.read_u16::<BE>()?;
+        Ok(GroupResponse {
+            struct_size,
+            op_code,
+            group_mask,
+        })
     }
 }
 
 impl SizeBytes for GroupResponse {
-    const SIZE_BYTES: usize = 2;
+    const SIZE_BYTES: usize = 4;
 }
 
 impl GroupResponse {
+    /// Check if the operation was successful.
+    pub fn is_success(&self) -> bool {
+        self.op_code >= 0
+    }
+
     /// Check if a specific group (0-15) is enabled.
     pub fn is_group_enabled(&self, group: u8) -> bool {
         if group > 15 {
             return false;
         }
-        (self.mask & (1 << group)) != 0
+        (self.group_mask & (1 << group)) != 0
     }
 
     /// Get list of enabled groups.
@@ -1209,5 +1291,170 @@ mod tests {
 
         assert_eq!(idn_point.x, 32767);
         assert_eq!(idn_point.y, -32767);
+    }
+
+    // ==========================================================================
+    // GroupRequest/GroupResponse Tests
+    // ==========================================================================
+
+    #[test]
+    fn test_group_request_size() {
+        assert_eq!(GroupRequest::SIZE_BYTES, 16);
+    }
+
+    #[test]
+    fn test_group_response_size() {
+        assert_eq!(GroupResponse::SIZE_BYTES, 4);
+    }
+
+    #[test]
+    fn test_group_request_get_constructor() {
+        let req = GroupRequest::get();
+        assert_eq!(req.struct_size, 16);
+        assert_eq!(req.op_code, IDNVAL_GROUPOP_GETMASK);
+        assert_eq!(req.group_mask, 0);
+        assert_eq!(req.auth_code, [0u8; 12]);
+    }
+
+    #[test]
+    fn test_group_request_set_constructor() {
+        let req = GroupRequest::set(0xABCD);
+        assert_eq!(req.struct_size, 16);
+        assert_eq!(req.op_code, IDNVAL_GROUPOP_SETMASK);
+        assert_eq!(req.group_mask, 0xABCD);
+        assert_eq!(req.auth_code, [0u8; 12]);
+    }
+
+    #[test]
+    fn test_group_request_set_with_auth() {
+        let auth = b"secret123";
+        let req = GroupRequest::set_with_auth(0x1234, auth);
+        assert_eq!(req.struct_size, 16);
+        assert_eq!(req.op_code, IDNVAL_GROUPOP_SETMASK);
+        assert_eq!(req.group_mask, 0x1234);
+        assert_eq!(&req.auth_code[..9], b"secret123");
+        assert_eq!(&req.auth_code[9..], &[0u8; 3]);
+    }
+
+    #[test]
+    fn test_group_request_roundtrip() {
+        let original = GroupRequest::set(0xFFFF);
+        let mut buffer = Vec::new();
+        original.write_to_bytes(&mut buffer).unwrap();
+        assert_eq!(buffer.len(), 16);
+
+        let parsed = GroupRequest::read_from_bytes(&buffer[..]).unwrap();
+        assert_eq!(parsed.struct_size, original.struct_size);
+        assert_eq!(parsed.op_code, original.op_code);
+        assert_eq!(parsed.group_mask, original.group_mask);
+        assert_eq!(parsed.auth_code, original.auth_code);
+    }
+
+    #[test]
+    fn test_group_request_byte_layout() {
+        let req = GroupRequest::set(0x1234);
+        let mut buffer = Vec::new();
+        req.write_to_bytes(&mut buffer).unwrap();
+
+        // Byte 0: struct_size = 16
+        assert_eq!(buffer[0], 16);
+        // Byte 1: op_code = 0x02 (SETMASK)
+        assert_eq!(buffer[1], 0x02);
+        // Bytes 2-3: group_mask = 0x1234 (big-endian)
+        assert_eq!(buffer[2], 0x12);
+        assert_eq!(buffer[3], 0x34);
+        // Bytes 4-15: auth_code (all zeros)
+        assert_eq!(&buffer[4..16], &[0u8; 12]);
+    }
+
+    #[test]
+    fn test_group_response_roundtrip() {
+        let original = GroupResponse {
+            struct_size: 4,
+            op_code: IDNVAL_GROUPOP_SUCCESS,
+            group_mask: 0x8000,
+        };
+        let mut buffer = Vec::new();
+        original.write_to_bytes(&mut buffer).unwrap();
+        assert_eq!(buffer.len(), 4);
+
+        let parsed = GroupResponse::read_from_bytes(&buffer[..]).unwrap();
+        assert_eq!(parsed.struct_size, original.struct_size);
+        assert_eq!(parsed.op_code, original.op_code);
+        assert_eq!(parsed.group_mask, original.group_mask);
+    }
+
+    #[test]
+    fn test_group_response_byte_layout() {
+        let resp = GroupResponse {
+            struct_size: 4,
+            op_code: IDNVAL_GROUPOP_SUCCESS,
+            group_mask: 0xABCD,
+        };
+        let mut buffer = Vec::new();
+        resp.write_to_bytes(&mut buffer).unwrap();
+
+        // Byte 0: struct_size = 4
+        assert_eq!(buffer[0], 4);
+        // Byte 1: op_code = 0x00 (SUCCESS)
+        assert_eq!(buffer[1], 0x00);
+        // Bytes 2-3: group_mask = 0xABCD (big-endian)
+        assert_eq!(buffer[2], 0xAB);
+        assert_eq!(buffer[3], 0xCD);
+    }
+
+    #[test]
+    fn test_group_response_is_success() {
+        let success = GroupResponse {
+            struct_size: 4,
+            op_code: IDNVAL_GROUPOP_SUCCESS,
+            group_mask: 0,
+        };
+        assert!(success.is_success());
+
+        let error_auth = GroupResponse {
+            struct_size: 4,
+            op_code: IDNVAL_GROUPOP_ERR_AUTH,
+            group_mask: 0,
+        };
+        assert!(!error_auth.is_success());
+
+        let error_op = GroupResponse {
+            struct_size: 4,
+            op_code: IDNVAL_GROUPOP_ERR_OPERATION,
+            group_mask: 0,
+        };
+        assert!(!error_op.is_success());
+
+        let error_req = GroupResponse {
+            struct_size: 4,
+            op_code: IDNVAL_GROUPOP_ERR_REQUEST,
+            group_mask: 0,
+        };
+        assert!(!error_req.is_success());
+    }
+
+    #[test]
+    fn test_group_response_is_group_enabled() {
+        let resp = GroupResponse {
+            struct_size: 4,
+            op_code: 0,
+            group_mask: 0b0000_0000_0000_0101, // Groups 0 and 2 enabled
+        };
+        assert!(resp.is_group_enabled(0));
+        assert!(!resp.is_group_enabled(1));
+        assert!(resp.is_group_enabled(2));
+        assert!(!resp.is_group_enabled(3));
+        assert!(!resp.is_group_enabled(16)); // Out of range
+    }
+
+    #[test]
+    fn test_group_response_enabled_groups() {
+        let resp = GroupResponse {
+            struct_size: 4,
+            op_code: 0,
+            group_mask: 0b1000_0000_0000_0011, // Groups 0, 1, and 15 enabled
+        };
+        assert_eq!(resp.enabled_groups(), vec![0, 1, 15]);
     }
 }

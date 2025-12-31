@@ -684,8 +684,7 @@ impl Stream {
         };
         self.packet_buffer.write_bytes(header)?;
 
-        // GET request has mask = 0
-        let request = GroupRequest { mask: 0 };
+        let request = GroupRequest::get();
         self.packet_buffer.write_bytes(request)?;
 
         self.socket.send(&self.packet_buffer)?;
@@ -745,8 +744,7 @@ impl Stream {
         };
         self.packet_buffer.write_bytes(header)?;
 
-        // SET request has mask = new value
-        let request = GroupRequest { mask };
+        let request = GroupRequest::set(mask);
         self.packet_buffer.write_bytes(request)?;
 
         self.socket.send(&self.packet_buffer)?;
