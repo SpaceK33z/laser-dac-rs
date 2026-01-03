@@ -16,7 +16,7 @@
 //!
 //!     // Find the first device
 //!     let (dac_info, source_addr) = discovery.next().ok_or("no DAC found")??;
-//!     println!("Found: {} at {}", dac_info.serial_number, source_addr);
+//!     println!("Found DAC at {}", source_addr);
 //!
 //!     // Connect to the DAC
 //!     let addressed = dac::Addressed::from_discovery(&dac_info, source_addr);
@@ -72,7 +72,7 @@ pub struct DiscoverDacs {
 ///
 /// for result in discovery {
 ///     match result {
-///         Ok((info, addr)) => println!("Found: {} at {}", info.serial_number, addr),
+///         Ok((info, addr)) => println!("Found DAC v{} at {}", info.version, addr),
 ///         Err(e) => eprintln!("Error: {}", e),
 ///     }
 /// }

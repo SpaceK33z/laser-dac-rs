@@ -21,8 +21,6 @@ pub struct Addressed {
 /// A LaserCube DAC's state and capabilities.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Dac {
-    /// The device serial number (12 hex characters).
-    pub serial_number: String,
     /// Protocol version.
     pub version: u8,
     /// Maximum buffer capacity for points.
@@ -48,7 +46,6 @@ impl Addressed {
     /// Create an `Addressed` DAC from discovery information.
     pub fn from_discovery(info: &DeviceInfo, source_addr: SocketAddr) -> Self {
         let dac = Dac {
-            serial_number: info.serial_number.clone(),
             version: info.version,
             max_buffer_space: info.max_buffer_space,
             ip_addr: source_addr.ip(),
@@ -86,8 +83,8 @@ impl fmt::Display for Dac {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "LaserCube {} @ {} (v{}, buffer: {})",
-            self.serial_number, self.ip_addr, self.version, self.max_buffer_space
+            "LaserCube @ {} (v{}, buffer: {})",
+            self.ip_addr, self.version, self.max_buffer_space
         )
     }
 }

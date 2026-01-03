@@ -1,9 +1,9 @@
-//! High-level API example using DacDiscoveryWorker.
+//! Automatic discovery example using DacDiscoveryWorker.
 //!
 //! This is the easiest way to use this crate - background discovery
 //! automatically finds and connects to DAC devices.
 //!
-//! Run with: `cargo run --example high_level -- [triangle|circle]`
+//! Run with: `cargo run --example automatic -- [triangle|circle]`
 
 mod common;
 

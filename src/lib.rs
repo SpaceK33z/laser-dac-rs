@@ -4,6 +4,70 @@
 //! laser DAC (Digital-to-Analog Converter) hardware, allowing you to write
 //! laser frames without worrying about device-specific protocols.
 //!
+//! # Getting Started
+//!
+//! The easiest way to use this crate is with [`DacDiscoveryWorker`], which handles
+//! device discovery and connection in the background:
+//!
+//! ```no_run
+//! use laser_dac::{DacDiscoveryWorker, EnabledDacTypes, LaserFrame, LaserPoint};
+//! use std::thread;
+//! use std::time::Duration;
+//!
+//! // Start background discovery for all DAC types
+//! let discovery = DacDiscoveryWorker::builder()
+//!     .enabled_types(EnabledDacTypes::all())
+//!     .build();
+//!
+//! // Collect discovered devices
+//! let mut workers = Vec::new();
+//! for _ in 0..50 {
+//!     for worker in discovery.poll_new_workers() {
+//!         println!("Found: {} ({})", worker.device_name(), worker.dac_type());
+//!         workers.push(worker);
+//!     }
+//!     thread::sleep(Duration::from_millis(100));
+//! }
+//!
+//! // Create a frame (simple square)
+//! let points = vec![
+//!     LaserPoint::blanked(-0.5, -0.5),
+//!     LaserPoint::new(-0.5, -0.5, 65535, 0, 0, 65535),
+//!     LaserPoint::new(0.5, -0.5, 0, 65535, 0, 65535),
+//!     LaserPoint::new(0.5, 0.5, 0, 0, 65535, 65535),
+//!     LaserPoint::new(-0.5, 0.5, 65535, 65535, 0, 65535),
+//!     LaserPoint::new(-0.5, -0.5, 65535, 0, 0, 65535),
+//! ];
+//! let frame = LaserFrame::new(30000, points);
+//!
+//! // Send frames to all connected DACs
+//! loop {
+//!     for worker in &mut workers {
+//!         worker.update();
+//!         worker.submit_frame(frame.clone());
+//!     }
+//!     thread::sleep(Duration::from_millis(33));
+//! }
+//! ```
+//!
+//! For more control over discovery and connection, use [`DacDiscovery`] directly:
+//!
+//! ```no_run
+//! use laser_dac::{DacDiscovery, DacWorker, EnabledDacTypes, LaserFrame, LaserPoint};
+//!
+//! let mut discovery = DacDiscovery::new(EnabledDacTypes::all());
+//! let devices = discovery.scan();
+//!
+//! for device in devices {
+//!     let name = device.name().to_string();
+//!     let dac_type = device.dac_type();
+//!     let backend = discovery.connect(device).expect("connection failed");
+//!     let mut worker = DacWorker::new(name, dac_type, backend);
+//!
+//!     // Use worker.update() and worker.submit_frame() in your render loop
+//! }
+//! ```
+//!
 //! # Supported DACs
 //!
 //! - **Helios** - USB laser DAC (feature: `helios`)
@@ -44,7 +108,9 @@ pub use backend::{DacBackend, WriteResult};
 // Discovery and worker types
 pub use discovery::{DacDiscovery, DiscoveredDevice, DiscoveredDeviceInfo};
 pub use discovery_worker::{DacDiscoveryWorker, DacDiscoveryWorkerBuilder};
-pub use worker::DacWorker;
+pub use worker::{
+    CallbackContext, CallbackError, DacCallbackWorker, DacWorker, WorkerCommand, WorkerStatus,
+};
 
 // Types
 pub use types::{

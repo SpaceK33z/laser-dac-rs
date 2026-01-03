@@ -1,11 +1,68 @@
-//! Background worker for non-blocking DAC frame writing.
+//! Background workers for non-blocking DAC frame writing.
 //!
-//! The `DacWorker` spawns a background thread that handles frame writing
-//! to any DAC backend. Frames are sent via a bounded channel (capacity 1),
-//! and old frames are automatically dropped if the device is busy.
+//! This module provides two worker types for different use cases:
+//!
+//! ## Push-based: [`DacWorker`]
+//!
+//! Use when you have a main loop that generates frames at its own pace:
+//! - You call [`DacWorker::submit_frame()`] whenever you have a new frame
+//! - If the device is busy, the frame is dropped (returns `false`)
+//! - Good for: game loops, animation systems, GUI applications
+//!
+//! ```ignore
+//! // Push-based example
+//! let mut worker = DacWorker::new(name, dac_type, backend);
+//!
+//! loop {
+//!     let frame = generate_frame(time);
+//!     worker.submit_frame(frame);  // Non-blocking, may drop frame
+//!     worker.update();             // Poll for status updates
+//!     thread::sleep(Duration::from_millis(16));
+//! }
+//! ```
+//!
+//! ## Callback-based: [`DacCallbackWorker`]
+//!
+//! Use when you want the DAC to drive the timing:
+//! - Your callback is invoked from the worker thread when device needs data
+//! - Frames are never dropped - the callback is called when device is ready
+//! - Good for: audio-synced output, precise timing, streaming from file
+//!
+//! ```ignore
+//! // Callback-based example
+//! let mut frame_iter = frames.into_iter();
+//!
+//! let worker = DacCallbackWorker::new(
+//!     name, dac_type, backend,
+//!     move |_ctx| frame_iter.next(),           // Data callback
+//!     |err| eprintln!("Error: {:?}", err),     // Error callback
+//! );
+//!
+//! // Worker runs autonomously, poll status periodically
+//! while worker.is_running() {
+//!     worker.update();
+//!     thread::sleep(Duration::from_millis(100));
+//! }
+//! ```
+//!
+//! ## Callback Contract
+//!
+//! The data callback for [`DacCallbackWorker`] runs on a dedicated worker thread:
+//! - Called sequentially (never concurrent with itself)
+//! - Called as fast as the device can consume frames
+//! - Should return quickly to maintain smooth output
+//! - May capture state via `Arc<Mutex<...>>` for dynamic behavior
+//! - Return `None` to signal graceful shutdown
+//!
+//! **Thread Safety**: The callback must be `Send + 'static`. Use `Arc<Mutex<T>>`
+//! or channels to share state with the main thread.
 
+use std::panic::AssertUnwindSafe;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver as MpscReceiver, Sender, SyncSender, TrySendError};
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use crate::backend::{DacBackend, WriteResult};
 use crate::types::{DacConnectionState, DacType, LaserFrame};
@@ -36,6 +93,48 @@ pub enum WorkerStatus {
     /// Connection lost due to error.
     ConnectionLost(String),
 }
+
+// =============================================================================
+// Callback Worker Types
+// =============================================================================
+
+/// Context provided to the data callback.
+///
+/// Contains metadata about the device and statistics about frames written.
+#[derive(Debug)]
+pub struct CallbackContext<'a> {
+    /// Name of the DAC device.
+    pub device_name: &'a str,
+    /// Type of DAC hardware.
+    pub dac_type: DacType,
+    /// Number of frames successfully written to the device.
+    pub frames_written: u64,
+}
+
+/// Errors that can occur during callback-driven output.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum CallbackError {
+    /// Connection to the DAC was lost.
+    ConnectionLost(String),
+    /// The data callback panicked.
+    CallbackPanic,
+}
+
+/// Status from the callback worker (internal use only).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum CallbackStatus {
+    /// Worker is running normally.
+    Running,
+    /// Worker stopped because callback returned None.
+    Stopped,
+    /// Worker stopped due to an error.
+    Error(String),
+}
+
+// =============================================================================
+// Push-based Worker (DacWorker)
+// =============================================================================
 
 /// Background worker that writes frames to a single DAC device.
 ///
@@ -243,6 +342,371 @@ impl DacWorker {
 impl Drop for DacWorker {
     fn drop(&mut self) {
         let _ = self.command_tx.try_send(WorkerCommand::Stop);
+        // Notify discovery worker so device can be rediscovered
+        if let Some(ref tx) = self.disconnect_tx {
+            let _ = tx.send(self.device_name.clone());
+        }
+    }
+}
+
+// =============================================================================
+// Callback-based Worker (DacCallbackWorker)
+// =============================================================================
+
+/// Callback-driven worker that invokes a closure when the device needs more points.
+///
+/// Unlike [`DacWorker`] where you push frames via `submit_frame()`, this worker
+/// pulls frames by invoking a user-provided callback from the worker thread.
+///
+/// This is similar to how audio libraries (CPAL, PortAudio) work - the hardware
+/// drives the timing, and your callback provides data when requested.
+///
+/// # Two-phase construction
+///
+/// The worker is created in two phases:
+/// 1. [`new()`](Self::new) - Creates a connected but idle worker
+/// 2. [`start()`](Self::start) - Starts the worker thread with your callbacks
+///
+/// This allows you to inspect the device (name, type) before deciding what
+/// callbacks to use, and is required when using [`DacDiscoveryWorker`](crate::DacDiscoveryWorker)
+/// with callback workers.
+///
+/// # Example
+///
+/// ```ignore
+/// use laser_dac::{DacCallbackWorker, DacDiscovery, EnabledDacTypes, LaserFrame, LaserPoint};
+/// use std::sync::atomic::{AtomicUsize, Ordering};
+/// use std::sync::Arc;
+///
+/// let mut discovery = DacDiscovery::new(EnabledDacTypes::all());
+/// let device = discovery.scan().into_iter().next().unwrap();
+/// let backend = discovery.connect(device).unwrap();
+///
+/// // Phase 1: Create worker (connected but not running)
+/// let mut worker = DacCallbackWorker::new(
+///     "My DAC".to_string(),
+///     DacType::Helios,
+///     backend,
+/// );
+///
+/// println!("Found device: {}", worker.device_name());
+///
+/// // Phase 2: Start with callbacks
+/// let frame_count = Arc::new(AtomicUsize::new(0));
+/// let counter = Arc::clone(&frame_count);
+///
+/// worker.start(
+///     move |ctx| {
+///         let n = counter.fetch_add(1, Ordering::Relaxed);
+///         if n >= 1000 { return None; }  // Stop after 1000 frames
+///         Some(generate_frame(n))
+///     },
+///     |err| eprintln!("Error: {:?}", err),
+/// );
+///
+/// while worker.is_running() {
+///     worker.update();
+///     std::thread::sleep(std::time::Duration::from_millis(100));
+/// }
+/// ```
+pub struct DacCallbackWorker {
+    device_name: String,
+    dac_type: DacType,
+    /// Backend held until start() is called.
+    backend: Option<Box<dyn DacBackend>>,
+    /// Stop flag (created in start()).
+    stop_flag: Option<Arc<AtomicBool>>,
+    /// Status receiver (created in start()).
+    status_rx: Option<MpscReceiver<CallbackStatus>>,
+    /// Worker thread handle (created in start()).
+    handle: Option<JoinHandle<()>>,
+    state: DacConnectionState,
+    /// Optional channel to notify discovery worker when this worker is dropped.
+    disconnect_tx: Option<DisconnectNotifier>,
+}
+
+impl DacCallbackWorker {
+    /// Creates a new callback worker for the given DAC backend.
+    ///
+    /// The worker is created in an idle state - call [`start()`](Self::start)
+    /// to begin the callback loop.
+    ///
+    /// This two-phase construction allows you to inspect the device before
+    /// deciding what callbacks to use.
+    pub fn new(device_name: String, dac_type: DacType, backend: Box<dyn DacBackend>) -> Self {
+        Self {
+            device_name: device_name.clone(),
+            dac_type,
+            backend: Some(backend),
+            stop_flag: None,
+            status_rx: None,
+            handle: None,
+            state: DacConnectionState::Connected { name: device_name },
+            disconnect_tx: None,
+        }
+    }
+
+    /// Internal constructor that optionally accepts a disconnect notifier.
+    pub(crate) fn new_with_disconnect_notifier(
+        device_name: String,
+        dac_type: DacType,
+        backend: Box<dyn DacBackend>,
+        disconnect_tx: DisconnectNotifier,
+    ) -> Self {
+        Self {
+            device_name: device_name.clone(),
+            dac_type,
+            backend: Some(backend),
+            stop_flag: None,
+            status_rx: None,
+            handle: None,
+            state: DacConnectionState::Connected { name: device_name },
+            disconnect_tx: Some(disconnect_tx),
+        }
+    }
+
+    /// Starts the worker with the given callbacks.
+    ///
+    /// The `data_callback` is invoked from the worker thread whenever the device
+    /// is ready for more data. Return `Some(frame)` to send a frame, or `None`
+    /// to stop output gracefully.
+    ///
+    /// The `error_callback` is invoked when an error occurs (connection lost,
+    /// callback panic, etc).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the worker has already been started.
+    ///
+    /// # Thread Safety
+    ///
+    /// **Both callbacks run on the worker thread**, not the main thread. This means:
+    /// - You cannot directly update main-thread state from inside the callbacks
+    /// - Use `Arc<Mutex<T>>` or channels to communicate with the main thread
+    /// - The error callback in particular often needs to send a message back rather
+    ///   than updating state directly
+    ///
+    /// Both callbacks must be `Send + 'static`.
+    pub fn start<F, E>(&mut self, data_callback: F, error_callback: E)
+    where
+        F: FnMut(&mut CallbackContext) -> Option<LaserFrame> + Send + 'static,
+        E: FnMut(CallbackError) + Send + 'static,
+    {
+        let backend = self
+            .backend
+            .take()
+            .expect("DacCallbackWorker::start() called but worker was already started");
+
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let (status_tx, status_rx) = mpsc::channel::<CallbackStatus>();
+
+        let name_for_loop = self.device_name.clone();
+        let dac_type = self.dac_type;
+        let stop_flag_for_loop = Arc::clone(&stop_flag);
+        let disconnect_tx_for_loop = self.disconnect_tx.clone();
+
+        let handle = thread::spawn(move || {
+            Self::callback_worker_loop(
+                backend,
+                data_callback,
+                error_callback,
+                status_tx,
+                stop_flag_for_loop,
+                name_for_loop,
+                dac_type,
+                disconnect_tx_for_loop,
+            );
+        });
+
+        self.stop_flag = Some(stop_flag);
+        self.status_rx = Some(status_rx);
+        self.handle = Some(handle);
+    }
+
+    /// Returns whether the worker has been started.
+    pub fn is_started(&self) -> bool {
+        self.backend.is_none()
+    }
+
+    /// Returns the device name.
+    pub fn device_name(&self) -> &str {
+        &self.device_name
+    }
+
+    /// Returns the DAC type.
+    pub fn dac_type(&self) -> DacType {
+        self.dac_type
+    }
+
+    /// Returns the current connection state.
+    pub fn state(&self) -> &DacConnectionState {
+        &self.state
+    }
+
+    /// Polls for status updates from the worker thread.
+    ///
+    /// Call this periodically to update the connection state.
+    /// Has no effect if the worker has not been started.
+    pub fn update(&mut self) {
+        let Some(ref status_rx) = self.status_rx else {
+            return;
+        };
+
+        while let Ok(status) = status_rx.try_recv() {
+            match status {
+                CallbackStatus::Running => {
+                    if matches!(self.state, DacConnectionState::Lost { .. }) {
+                        self.state = DacConnectionState::Connected {
+                            name: self.device_name.clone(),
+                        };
+                    }
+                }
+                CallbackStatus::Stopped => {
+                    self.state = DacConnectionState::Stopped {
+                        name: self.device_name.clone(),
+                    };
+                }
+                CallbackStatus::Error(error) => {
+                    self.state = DacConnectionState::Lost {
+                        name: self.device_name.clone(),
+                        error: Some(error),
+                    };
+                }
+            }
+        }
+
+        // Check if thread died unexpectedly
+        if !self.is_running() && matches!(self.state, DacConnectionState::Connected { .. }) {
+            self.state = DacConnectionState::Lost {
+                name: self.device_name.clone(),
+                error: Some("Worker thread died unexpectedly".to_string()),
+            };
+        }
+    }
+
+    /// Checks if the worker thread is currently running.
+    ///
+    /// Returns `false` if:
+    /// - The worker has not been started yet (call [`start()`](Self::start) first)
+    /// - The worker has stopped (callback returned `None` or [`stop()`](Self::stop) was called)
+    /// - The worker thread terminated due to an error
+    pub fn is_running(&self) -> bool {
+        self.handle.as_ref().is_some_and(|h| !h.is_finished())
+    }
+
+    /// Signals the worker to stop (non-blocking).
+    ///
+    /// The worker will finish its current frame and exit gracefully.
+    /// Use [`is_running()`](Self::is_running) to check when the worker has stopped.
+    ///
+    /// Has no effect if the worker has not been started.
+    pub fn stop(&self) {
+        if let Some(ref stop_flag) = self.stop_flag {
+            stop_flag.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// The callback-driven worker loop.
+    #[allow(clippy::too_many_arguments)]
+    fn callback_worker_loop<F, E>(
+        mut backend: Box<dyn DacBackend>,
+        mut data_callback: F,
+        mut error_callback: E,
+        status_tx: Sender<CallbackStatus>,
+        stop_flag: Arc<AtomicBool>,
+        device_name: String,
+        dac_type: DacType,
+        disconnect_tx: Option<DisconnectNotifier>,
+    ) where
+        F: FnMut(&mut CallbackContext) -> Option<LaserFrame> + Send + 'static,
+        E: FnMut(CallbackError) + Send + 'static,
+    {
+        // Connect if not already connected
+        if !backend.is_connected() {
+            if let Err(e) = backend.connect() {
+                error_callback(CallbackError::ConnectionLost(e.to_string()));
+                let _ = status_tx.send(CallbackStatus::Error(e.to_string()));
+                if let Some(ref tx) = disconnect_tx {
+                    let _ = tx.send(device_name);
+                }
+                return;
+            }
+        }
+
+        // Notify that we're running
+        let _ = status_tx.send(CallbackStatus::Running);
+
+        let mut ctx = CallbackContext {
+            device_name: &device_name,
+            dac_type,
+            frames_written: 0,
+        };
+
+        let mut current_frame: Option<LaserFrame> = None;
+
+        while !stop_flag.load(Ordering::Relaxed) {
+            // Get frame to write (either pending retry or new from callback)
+            let frame = match current_frame.take() {
+                Some(f) => f,
+                None => {
+                    // Request new frame from callback
+                    match std::panic::catch_unwind(AssertUnwindSafe(|| data_callback(&mut ctx))) {
+                        Ok(Some(f)) => f,
+                        Ok(None) => {
+                            // Callback signaled stop
+                            let _ = backend.stop();
+                            let _ = status_tx.send(CallbackStatus::Stopped);
+                            return;
+                        }
+                        Err(_) => {
+                            // Callback panicked
+                            error_callback(CallbackError::CallbackPanic);
+                            let _ =
+                                status_tx.send(CallbackStatus::Error("Callback panicked".into()));
+                            if let Some(ref tx) = disconnect_tx {
+                                let _ = tx.send(device_name);
+                            }
+                            return;
+                        }
+                    }
+                }
+            };
+
+            // Write frame to device
+            match backend.write_frame(&frame) {
+                Ok(WriteResult::Written) => {
+                    ctx.frames_written += 1;
+                    // Frame consumed, will request new one next iteration
+                }
+                Ok(WriteResult::DeviceBusy) => {
+                    // Keep frame for retry
+                    current_frame = Some(frame);
+                    // Small sleep to avoid spinning
+                    thread::sleep(Duration::from_micros(500));
+                }
+                Err(e) => {
+                    error_callback(CallbackError::ConnectionLost(e.to_string()));
+                    let _ = status_tx.send(CallbackStatus::Error(e.to_string()));
+                    if let Some(ref tx) = disconnect_tx {
+                        let _ = tx.send(device_name);
+                    }
+                    return;
+                }
+            }
+        }
+
+        // Stop requested via stop_flag
+        let _ = backend.stop();
+        let _ = status_tx.send(CallbackStatus::Stopped);
+    }
+}
+
+impl Drop for DacCallbackWorker {
+    fn drop(&mut self) {
+        // Signal stop if started
+        if let Some(ref stop_flag) = self.stop_flag {
+            stop_flag.store(true, Ordering::Relaxed);
+        }
         // Notify discovery worker so device can be rediscovered
         if let Some(ref tx) = self.disconnect_tx {
             let _ = tx.send(self.device_name.clone());

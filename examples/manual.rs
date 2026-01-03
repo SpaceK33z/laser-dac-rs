@@ -1,9 +1,9 @@
-//! Mid-level API example using DacDiscovery.
+//! Manual discovery example using DacDiscovery.
 //!
 //! This gives you more control over device discovery and connection,
 //! while still using the unified abstraction layer.
 //!
-//! Run with: `cargo run --example mid_level -- [triangle|circle]`
+//! Run with: `cargo run --example manual -- [triangle|circle]`
 
 mod common;
 

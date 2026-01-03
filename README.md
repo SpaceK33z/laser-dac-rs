@@ -30,14 +30,16 @@ This crate does not apply any additional processing on points (like blanking), e
 
 The DACs that are not verified, I have not tested with the DAC itself yet. Help to test these would be very welcome!
 
+IDN a standardized protocol. So any DAC that supports IDN would be supported. The implementation was tested with the [HeliosPRO](https://bitlasers.com/heliospro-laser-dac/).
+
 ## Quick Start
 
 Connect your laser DAC and run an example. For full API details, see the [documentation](https://docs.rs/laser-dac).
 
 ```bash
-cargo run --example high_level -- circle
+cargo run --example automatic -- circle
 # or:
-cargo run --example high_level -- triangle
+cargo run --example automatic -- triangle
 ```
 
 The examples run continuously until you press Ctrl+C.
@@ -46,7 +48,7 @@ The examples run continuously until you press Ctrl+C.
 
 There are two discovery APIs:
 
-- `DacDiscoveryWorker` continuously scans in a background thread and auto-connects to new devices, yielding ready-to-use `DacWorker` instances.
+- `DacDiscoveryWorker` continuously scans in a background thread and auto-connects to new devices (predicate optional), yielding ready-to-use `DacWorker` instances.
 - `DacDiscovery` is manual: you call `scan()` and decide if/when to `connect()` each `DiscoveredDevice`.
 
 `DacDiscoveryWorker` runs a background thread that:

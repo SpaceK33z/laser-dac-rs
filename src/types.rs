@@ -259,7 +259,9 @@ impl DacDevice {
 pub enum DacConnectionState {
     /// Successfully connected and ready to receive frames.
     Connected { name: String },
-    /// Connection was lost, waiting for reconnect.
+    /// Worker stopped normally (callback returned None or stop() was called).
+    Stopped { name: String },
+    /// Connection was lost due to an error.
     Lost { name: String, error: Option<String> },
 }
 

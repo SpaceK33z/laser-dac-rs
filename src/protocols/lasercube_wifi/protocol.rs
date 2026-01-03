@@ -171,8 +171,6 @@ pub struct DeviceInfo {
     pub version: u8,
     /// Maximum buffer capacity for points.
     pub max_buffer_space: u16,
-    /// Device serial number (12 hex characters).
-    pub serial_number: String,
 }
 
 impl DeviceInfo {
@@ -208,17 +206,9 @@ impl DeviceInfo {
         let version = buffer[2];
         let max_buffer_space = LittleEndian::read_u16(&buffer[21..23]);
 
-        // Extract serial number (6 bytes at offset 26, converted to hex string)
-        let serial_bytes = &buffer[26..32];
-        let serial_number = serial_bytes
-            .iter()
-            .map(|b| format!("{:02X}", b))
-            .collect::<String>();
-
         Ok(DeviceInfo {
             version,
             max_buffer_space,
-            serial_number,
         })
     }
 }

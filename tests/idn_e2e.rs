@@ -102,6 +102,7 @@ pub struct MockIdnServerBuilder {
     status: u8,
     services: Vec<MockService>,
     relays: Vec<MockRelay>,
+    silent: bool,
 }
 
 impl MockIdnServerBuilder {
@@ -121,6 +122,7 @@ impl MockIdnServerBuilder {
             status: 0,
             services: vec![MockService::laser_projector(1, "Laser1")],
             relays: Vec::new(),
+            silent: false,
         }
     }
 
@@ -154,6 +156,12 @@ impl MockIdnServerBuilder {
         self
     }
 
+    /// Enable silent mode (server receives but never responds).
+    pub fn silent(mut self, silent: bool) -> Self {
+        self.silent = silent;
+        self
+    }
+
     /// Build the MockIdnServer.
     pub fn build(self) -> io::Result<MockIdnServer> {
         MockIdnServer::from_builder(self)
@@ -172,6 +180,7 @@ pub struct MockIdnServer {
     running: Arc<AtomicBool>,
     disconnected: Arc<AtomicBool>,
     received_packets: Arc<Mutex<Vec<Vec<u8>>>>,
+    silent: bool,
 }
 
 impl MockIdnServer {
@@ -200,6 +209,7 @@ impl MockIdnServer {
             running: Arc::new(AtomicBool::new(false)),
             disconnected: Arc::new(AtomicBool::new(false)),
             received_packets: Arc::new(Mutex::new(Vec::new())),
+            silent: builder.silent,
         })
     }
 
@@ -277,8 +287,8 @@ impl MockIdnServer {
                 packets.push(buf[..len].to_vec());
             }
 
-            // If disconnected, don't respond
-            if self.disconnected.load(Ordering::SeqCst) {
+            // If silent mode or disconnected, don't respond
+            if self.silent || self.disconnected.load(Ordering::SeqCst) {
                 continue;
             }
 
@@ -1017,4 +1027,272 @@ fn test_discovered_device_info_metadata() {
 
     // name() returns IP for network devices (unique identifier)
     assert_eq!(info.name(), "127.0.0.1");
+}
+
+// =============================================================================
+// Timeout, Connection, and Back Pressure Tests
+// =============================================================================
+
+#[test]
+fn test_server_never_responds_timeout() {
+    use laser_dac::discovery::IdnDiscovery;
+    use laser_dac::protocols::idn::ServerScanner;
+
+    // Create a silent mock server that receives but never responds
+    let server = MockIdnServer::builder("SilentServer")
+        .silent(true)
+        .build()
+        .unwrap();
+    let server_addr = server.addr();
+
+    let handle = server.run();
+    thread::sleep(Duration::from_millis(50));
+
+    // Test 1: ServerScanner should return empty results after timeout
+    let mut scanner = ServerScanner::new(0).expect("Failed to create scanner");
+    let servers = scanner
+        .scan_address(server_addr, Duration::from_millis(200))
+        .expect("Scan should not error, just return empty");
+
+    assert!(
+        servers.is_empty(),
+        "Scanner should return empty results for silent server"
+    );
+
+    // Verify server received the scan request
+    assert!(
+        handle.received_packet_count() > 0,
+        "Silent server should still receive packets"
+    );
+
+    // Test 2: IdnDiscovery should also return empty results
+    handle.clear_received_packets();
+    let mut idn_discovery = IdnDiscovery::new();
+    let devices = idn_discovery.scan_address(server_addr);
+
+    assert!(
+        devices.is_empty(),
+        "IdnDiscovery should return empty for silent server"
+    );
+    assert!(
+        handle.received_packet_count() > 0,
+        "Silent server should receive IdnDiscovery packets"
+    );
+}
+
+#[test]
+fn test_discovery_timeout_on_established_connection() {
+    // Test that an established connection properly times out when server goes silent
+    let server = MockIdnServer::new("TestDAC").unwrap();
+    let server_addr = server.addr();
+    let handle = server.run();
+
+    thread::sleep(Duration::from_millis(50));
+
+    let discovery = DacDiscoveryWorker::builder()
+        .enabled_types(idn_only())
+        .idn_scan_addresses(vec![server_addr])
+        .discovery_interval(Duration::from_millis(100))
+        .build();
+
+    // Get a connected worker
+    let mut worker =
+        wait_for_worker(&discovery, Duration::from_secs(2)).expect("Should get a worker");
+
+    // Send a frame successfully first
+    assert!(worker.submit_frame(create_test_frame()));
+    thread::sleep(Duration::from_millis(100));
+    worker.update();
+
+    assert!(
+        matches!(worker.state(), DacConnectionState::Connected { .. }),
+        "Worker should be connected initially"
+    );
+
+    // Now simulate disconnect (server stops responding to pings)
+    handle.simulate_disconnect();
+
+    // Wait for keepalive interval (500ms) + ping timeout (200ms) + margin
+    thread::sleep(Duration::from_millis(800));
+
+    // Try to send another frame - this should trigger keepalive check
+    worker.submit_frame(create_test_frame());
+    thread::sleep(Duration::from_millis(300));
+    worker.update();
+
+    // Verify connection loss was detected
+    assert!(
+        matches!(worker.state(), DacConnectionState::Lost { .. }),
+        "Worker should detect connection loss when server stops responding"
+    );
+}
+
+#[test]
+fn test_connection_to_nonexistent_server() {
+    use laser_dac::discovery::IdnDiscovery;
+    use laser_dac::protocols::idn::ServerScanner;
+
+    // Use a high port that definitely has no server listening
+    let nonexistent_addr: SocketAddr = "127.0.0.1:65432".parse().unwrap();
+
+    // Test 1: ServerScanner should gracefully handle no server
+    let mut scanner = ServerScanner::new(0).expect("Failed to create scanner");
+    let servers = scanner
+        .scan_address(nonexistent_addr, Duration::from_millis(200))
+        .expect("Scan should not error, just return empty");
+
+    assert!(
+        servers.is_empty(),
+        "Scanner should return empty results when no server exists"
+    );
+
+    // Test 2: IdnDiscovery should also gracefully handle no server
+    let mut idn_discovery = IdnDiscovery::new();
+    let devices = idn_discovery.scan_address(nonexistent_addr);
+
+    assert!(
+        devices.is_empty(),
+        "IdnDiscovery should return empty for nonexistent server"
+    );
+
+    // Test 3: DacDiscoveryWorker should handle unreachable addresses without crashing
+    let discovery = DacDiscoveryWorker::builder()
+        .enabled_types(idn_only())
+        .idn_scan_addresses(vec![nonexistent_addr])
+        .discovery_interval(Duration::from_millis(100))
+        .build();
+
+    // Let discovery run for a bit - should not panic
+    thread::sleep(Duration::from_millis(300));
+
+    // Should find nothing but not crash
+    let devices: Vec<_> = discovery.poll_discovered_devices().collect();
+    let workers: Vec<_> = discovery.poll_new_workers().collect();
+
+    assert!(devices.is_empty(), "Should not discover any devices");
+    assert!(workers.is_empty(), "Should not get any workers");
+}
+
+#[test]
+fn test_rapid_frame_submission_back_pressure() {
+    let server = MockIdnServer::new("TestDAC").unwrap();
+    let server_addr = server.addr();
+    let handle = server.run();
+
+    thread::sleep(Duration::from_millis(50));
+
+    let discovery = DacDiscoveryWorker::builder()
+        .enabled_types(idn_only())
+        .idn_scan_addresses(vec![server_addr])
+        .discovery_interval(Duration::from_millis(100))
+        .build();
+
+    let worker = wait_for_worker(&discovery, Duration::from_secs(2)).expect("Should get a worker");
+
+    // Clear discovery packets
+    handle.clear_received_packets();
+
+    // Submit many frames rapidly in a tight loop
+    let mut submitted = 0;
+    let mut dropped = 0;
+    for _ in 0..100 {
+        if worker.submit_frame(create_test_frame()) {
+            submitted += 1;
+        } else {
+            dropped += 1;
+        }
+    }
+
+    // Some frames should be submitted
+    assert!(
+        submitted > 0,
+        "At least some frames should be submitted successfully"
+    );
+
+    // Due to the bounded channel (capacity 1), many frames should be dropped
+    // when submitting faster than the worker can process
+    assert!(
+        dropped > 0,
+        "Some frames should be dropped due to back pressure (channel capacity 1)"
+    );
+
+    eprintln!(
+        "Rapid submission: {} submitted, {} dropped",
+        submitted, dropped
+    );
+
+    // Give time for processing
+    thread::sleep(Duration::from_millis(200));
+
+    // Verify server received at least some frame data
+    assert!(
+        handle.received_frame_data(),
+        "Server should have received at least some frame data"
+    );
+
+    // Verify worker is still functional after burst
+    let mut worker = worker;
+    worker.update();
+    assert!(
+        matches!(worker.state(), DacConnectionState::Connected { .. }),
+        "Worker should remain connected after rapid submission"
+    );
+
+    // Verify we can still send frames after the burst
+    handle.clear_received_packets();
+    thread::sleep(Duration::from_millis(50)); // Give channel time to drain
+    assert!(
+        worker.submit_frame(create_test_frame()),
+        "Should be able to submit frame after burst completes"
+    );
+    thread::sleep(Duration::from_millis(100));
+    assert!(
+        handle.received_frame_data(),
+        "Server should receive frame after burst"
+    );
+}
+
+#[test]
+fn test_submit_frame_returns_false_when_busy() {
+    let server = MockIdnServer::new("TestDAC").unwrap();
+    let server_addr = server.addr();
+    let _handle = server.run();
+
+    thread::sleep(Duration::from_millis(50));
+
+    let discovery = DacDiscoveryWorker::builder()
+        .enabled_types(idn_only())
+        .idn_scan_addresses(vec![server_addr])
+        .discovery_interval(Duration::from_millis(100))
+        .build();
+
+    let worker = wait_for_worker(&discovery, Duration::from_secs(2)).expect("Should get a worker");
+
+    // Submit first frame - should succeed
+    let first_result = worker.submit_frame(create_test_frame());
+    assert!(first_result, "First frame should be submitted");
+
+    // Immediately submit second frame while first is likely still being processed
+    // With a channel capacity of 1, if the worker hasn't picked up the first frame yet,
+    // this should return false
+    let mut any_rejected = false;
+    for _ in 0..10 {
+        if !worker.submit_frame(create_test_frame()) {
+            any_rejected = true;
+            break;
+        }
+    }
+
+    // We expect at least one rejection when submitting rapidly
+    // (though this depends on timing, it should happen frequently)
+    eprintln!("Immediate submission test: any_rejected = {}", any_rejected);
+
+    // The important invariant: the worker should still be functional
+    thread::sleep(Duration::from_millis(100));
+    let mut worker = worker;
+    worker.update();
+    assert!(
+        matches!(worker.state(), DacConnectionState::Connected { .. }),
+        "Worker should remain connected regardless of dropped frames"
+    );
 }

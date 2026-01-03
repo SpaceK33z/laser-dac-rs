@@ -58,12 +58,12 @@ clap = { version = "4", features = ["derive"] }
 env_logger = "0.11"
 
 [[example]]
-name = "high_level"
-path = "examples/high_level.rs"
+name = "automatic"
+path = "examples/automatic.rs"
 
 [[example]]
-name = "mid_level"
-path = "examples/mid_level.rs"
+name = "manual"
+path = "examples/manual.rs"
 
 [package.metadata.docs.rs]
 features = ["all-dacs"]

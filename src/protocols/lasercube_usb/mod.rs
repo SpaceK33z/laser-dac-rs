@@ -48,6 +48,10 @@ pub use rusb;
 
 use protocol::{LASERDOCK_PID, LASERDOCK_VID};
 use rusb::UsbContext;
+use std::time::Duration;
+
+/// Timeout for USB control transfers.
+const TIMEOUT: Duration = Duration::from_millis(100);
 
 /// A controller for managing LaserCube/LaserDock USB DAC discovery.
 pub struct DacController {
@@ -111,6 +115,21 @@ pub fn is_laserdock_device<T: UsbContext>(device: &rusb::Device<T>) -> bool {
     } else {
         false
     }
+}
+
+/// Read the serial number from a LaserCube USB device.
+///
+/// Returns `None` if the device cannot be opened or has no serial number.
+pub fn get_serial_number<T: UsbContext>(device: &rusb::Device<T>) -> Option<String> {
+    let descriptor = device.device_descriptor().ok()?;
+    // Check if device has a serial number string
+    descriptor.serial_number_string_index()?;
+    let handle = device.open().ok()?;
+    let languages = handle.read_languages(TIMEOUT).ok()?;
+    let lang = languages.first()?;
+    handle
+        .read_serial_number_string(*lang, &descriptor, TIMEOUT)
+        .ok()
 }
 
 #[cfg(test)]

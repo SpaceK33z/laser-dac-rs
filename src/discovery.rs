@@ -90,7 +90,6 @@ pub struct DiscoveredDevice {
     ip_address: Option<IpAddr>,
     mac_address: Option<[u8; 6]>,
     hostname: Option<String>,
-    serial_number: Option<String>,
     usb_address: Option<String>,
     hardware_name: Option<String>,
     inner: DiscoveredDeviceInner,
@@ -124,7 +123,6 @@ impl DiscoveredDevice {
             ip_address: self.ip_address,
             mac_address: self.mac_address,
             hostname: self.hostname.clone(),
-            serial_number: self.serial_number.clone(),
             usb_address: self.usb_address.clone(),
             hardware_name: self.hardware_name.clone(),
         }
@@ -145,8 +143,6 @@ pub struct DiscoveredDeviceInfo {
     pub mac_address: Option<[u8; 6]>,
     /// Hostname (IDN only).
     pub hostname: Option<String>,
-    /// Serial number (LaserCube WiFi only).
-    pub serial_number: Option<String>,
     /// USB bus:address (LaserCube USB only).
     pub usb_address: Option<String>,
     /// Device name from hardware (Helios only).
@@ -252,7 +248,6 @@ impl HeliosDiscovery {
                 ip_address: None,
                 mac_address: None,
                 hostname: None,
-                serial_number: None,
                 usb_address: None,
                 hardware_name: Some(hardware_name),
                 inner: DiscoveredDeviceInner::Helios(opened),
@@ -331,7 +326,6 @@ impl EtherDreamDiscovery {
                 ip_address: Some(ip),
                 mac_address: Some(broadcast.mac_address),
                 hostname: None,
-                serial_number: None,
                 usb_address: None,
                 hardware_name: None,
                 inner: DiscoveredDeviceInner::EtherDream { broadcast, ip },
@@ -396,7 +390,6 @@ impl IdnDiscovery {
                 ip_address,
                 mac_address: None,
                 hostname: Some(hostname),
-                serial_number: None,
                 usb_address: None,
                 hardware_name: None,
                 inner: DiscoveredDeviceInner::Idn { server, service },
@@ -444,7 +437,6 @@ impl IdnDiscovery {
                 ip_address,
                 mac_address: None,
                 hostname: Some(hostname),
-                serial_number: None,
                 usb_address: None,
                 hardware_name: None,
                 inner: DiscoveredDeviceInner::Idn { server, service },
@@ -497,14 +489,12 @@ impl LasercubeWifiDiscovery {
             };
 
             let ip_address = source_addr.ip();
-            let serial_number = device_info.serial_number.clone();
 
             discovered.push(DiscoveredDevice {
                 dac_type: DacType::LasercubeWifi,
                 ip_address: Some(ip_address),
                 mac_address: None,
                 hostname: None,
-                serial_number: Some(serial_number),
                 usb_address: None,
                 hardware_name: None,
                 inner: DiscoveredDeviceInner::LasercubeWifi {
@@ -562,15 +552,15 @@ impl LasercubeUsbDiscovery {
         let mut discovered = Vec::new();
         for device in devices {
             let usb_address = format!("{}:{}", device.bus_number(), device.address());
+            let serial = crate::protocols::lasercube_usb::get_serial_number(&device);
 
             discovered.push(DiscoveredDevice {
                 dac_type: DacType::LasercubeUsb,
                 ip_address: None,
                 mac_address: None,
                 hostname: None,
-                serial_number: None,
                 usb_address: Some(usb_address),
-                hardware_name: None,
+                hardware_name: serial,
                 inner: DiscoveredDeviceInner::LasercubeUsb(device),
             });
         }
