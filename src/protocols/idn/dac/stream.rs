@@ -570,8 +570,7 @@ impl Stream {
         let len = match self.socket.recv(&mut self.recv_buffer) {
             Ok(len) => len,
             Err(e)
-                if e.kind() == io::ErrorKind::WouldBlock
-                    || e.kind() == io::ErrorKind::TimedOut =>
+                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
             {
                 return Err(CommunicationError::Response(ResponseError::Timeout));
             }
@@ -639,8 +638,7 @@ impl Stream {
         let len = match self.socket.recv(&mut self.recv_buffer) {
             Ok(len) => len,
             Err(e)
-                if e.kind() == io::ErrorKind::WouldBlock
-                    || e.kind() == io::ErrorKind::TimedOut =>
+                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
             {
                 return Err(CommunicationError::Response(ResponseError::Timeout));
             }
@@ -692,8 +690,7 @@ impl Stream {
         let len = match self.socket.recv(&mut self.recv_buffer) {
             Ok(len) => len,
             Err(e)
-                if e.kind() == io::ErrorKind::WouldBlock
-                    || e.kind() == io::ErrorKind::TimedOut =>
+                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
             {
                 return Err(CommunicationError::Response(ResponseError::Timeout));
             }
@@ -752,8 +749,7 @@ impl Stream {
         let len = match self.socket.recv(&mut self.recv_buffer) {
             Ok(len) => len,
             Err(e)
-                if e.kind() == io::ErrorKind::WouldBlock
-                    || e.kind() == io::ErrorKind::TimedOut =>
+                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
             {
                 return Err(CommunicationError::Response(ResponseError::Timeout));
             }
@@ -815,8 +811,7 @@ impl Stream {
         let len = match self.socket.recv(&mut self.recv_buffer) {
             Ok(len) => len,
             Err(e)
-                if e.kind() == io::ErrorKind::WouldBlock
-                    || e.kind() == io::ErrorKind::TimedOut =>
+                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
             {
                 return Err(CommunicationError::Response(ResponseError::Timeout));
             }
@@ -888,8 +883,7 @@ impl Stream {
         let len = match self.socket.recv(&mut self.recv_buffer) {
             Ok(len) => len,
             Err(e)
-                if e.kind() == io::ErrorKind::WouldBlock
-                    || e.kind() == io::ErrorKind::TimedOut =>
+                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
             {
                 return Err(CommunicationError::Response(ResponseError::Timeout));
             }
