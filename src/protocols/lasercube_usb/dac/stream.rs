@@ -8,7 +8,7 @@ use crate::protocols::lasercube_usb::protocol::{
     CMD_GET_RINGBUFFER_EMPTY_SAMPLE_COUNT, CMD_GET_RINGBUFFER_SAMPLE_COUNT,
     CMD_GET_SAMPLE_ELEMENT_COUNT, CMD_GET_VERSION_MAJOR, CMD_GET_VERSION_MINOR, CMD_SET_DAC_RATE,
     CMD_SET_OUTPUT, CONTROL_INTERFACE, CONTROL_PACKET_SIZE, DATA_ALT_SETTING, DATA_INTERFACE,
-    ENDPOINT_CONTROL_IN, ENDPOINT_CONTROL_OUT, ENDPOINT_DATA_OUT, SAMPLE_SIZE_BYTES,
+    ENDPOINT_CONTROL_IN, ENDPOINT_CONTROL_OUT, ENDPOINT_DATA_OUT,
 };
 use rusb::{DeviceHandle, UsbContext};
 use std::time::Duration;
@@ -77,8 +77,7 @@ impl<T: UsbContext> Stream<T> {
         self.info.ringbuffer_capacity = self.get_u32(CMD_GET_RINGBUFFER_SAMPLE_COUNT)?;
         self.info.ringbuffer_free_space = self.get_u32(CMD_GET_RINGBUFFER_EMPTY_SAMPLE_COUNT)?;
 
-        let output_enabled = self.get_u8(CMD_GET_OUTPUT)?;
-        self.info.output_enabled = output_enabled == 1;
+        self.info.output_enabled = self.get_u8(CMD_GET_OUTPUT)? == 1;
 
         Ok(())
     }
@@ -156,21 +155,21 @@ impl<T: UsbContext> Stream<T> {
             return Err(Error::DeviceNotOpened);
         }
 
-        // Apply flipping if needed and convert to bytes
-        let mut buffer = Vec::with_capacity(samples.len() * SAMPLE_SIZE_BYTES);
-        for sample in samples {
-            let mut s = *sample;
-            if self.flip_x {
-                s.flip_x();
-            }
-            if self.flip_y {
-                s.flip_y();
-            }
-            buffer.extend_from_slice(&s.to_bytes());
-        }
+        let buffer: Vec<u8> = samples
+            .iter()
+            .flat_map(|sample| {
+                let mut s = *sample;
+                if self.flip_x {
+                    s.flip_x();
+                }
+                if self.flip_y {
+                    s.flip_y();
+                }
+                s.to_bytes()
+            })
+            .collect();
 
-        self.send_data(&buffer)?;
-        Ok(())
+        self.send_data(&buffer)
     }
 
     /// Write a frame of samples at the specified rate.
@@ -223,9 +222,7 @@ impl<T: UsbContext> Stream<T> {
 
     /// Get a u32 value using a control command.
     fn get_u32(&self, command: u8) -> Result<u32> {
-        let packet = [command];
-
-        self.send_control(&packet)?;
+        self.send_control(&[command])?;
         let response = self.receive_control()?;
 
         if response[1] != 0 {

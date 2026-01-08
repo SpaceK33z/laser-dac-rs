@@ -196,9 +196,9 @@ fn create_test_pattern_frame() -> LaserFrame {
             LaserPoint::new(
                 p.x,
                 p.y,
-                p.r as u16 * 65535,
-                p.g as u16 * 65535,
-                p.b as u16 * 65535,
+                p.r as u16 * 257,
+                p.g as u16 * 257,
+                p.b as u16 * 257,
                 65535,
             )
         })

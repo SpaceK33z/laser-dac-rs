@@ -55,10 +55,7 @@ impl LaserPoint {
         Self {
             x,
             y,
-            r: 0,
-            g: 0,
-            b: 0,
-            intensity: 0,
+            ..Default::default()
         }
     }
 }

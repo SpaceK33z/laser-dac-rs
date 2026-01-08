@@ -115,7 +115,7 @@ impl Stream {
 
     /// Perform the warmup sequence to pre-fill the buffer.
     fn warmup(&mut self) -> Result<(), CommunicationError> {
-        let blank_points: Vec<Point> = (0..MAX_POINTS_PER_PACKET).map(|_| Point::blank()).collect();
+        let blank_points = [Point::blank(); MAX_POINTS_PER_PACKET];
 
         for _ in 0..REQUIRED_WARMUP_PACKETS {
             self.send_points_internal(&blank_points)?;

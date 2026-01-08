@@ -42,13 +42,8 @@ fn main() -> Result<()> {
     let mut frame_count = 0usize;
     loop {
         let frame = create_frame(args.shape, args.min_points, frame_count);
-        let mut any_accepted = false;
-        for worker in &mut workers {
-            worker.update();
-            if worker.submit_frame(frame.clone()) {
-                any_accepted = true;
-            }
-        }
+        workers.iter_mut().for_each(|w| w.update());
+        let any_accepted = workers.iter_mut().any(|w| w.submit_frame(frame.clone()));
         if any_accepted {
             frame_count = frame_count.wrapping_add(1);
         }

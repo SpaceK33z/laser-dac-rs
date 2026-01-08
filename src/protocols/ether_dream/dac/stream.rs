@@ -200,51 +200,52 @@ impl<'a> CommandQueue<'a> {
         let mut command_buffer = mem::take(&mut stream.command_buffer);
 
         for command in command_buffer.drain(..) {
-            match command {
+            let start_byte = match command {
                 QueuedCommand::PrepareStream => {
                     stream.send_command(protocol::command::PrepareStream)?;
-                    command_bytes.push(protocol::command::PrepareStream::START_BYTE);
+                    protocol::command::PrepareStream::START_BYTE
                 }
                 QueuedCommand::Begin(begin) => {
                     stream.send_command(begin)?;
-                    command_bytes.push(protocol::command::Begin::START_BYTE);
+                    protocol::command::Begin::START_BYTE
                 }
                 QueuedCommand::Update(update) => {
                     stream.send_command(update)?;
-                    command_bytes.push(protocol::command::Update::START_BYTE);
+                    protocol::command::Update::START_BYTE
                 }
                 QueuedCommand::PointRate(point_rate) => {
                     stream.send_command(point_rate)?;
-                    command_bytes.push(protocol::command::PointRate::START_BYTE);
+                    protocol::command::PointRate::START_BYTE
                 }
                 QueuedCommand::Data(range) => {
-                    let points = Cow::Borrowed(&stream.point_buffer[range.clone()]);
+                    let points = Cow::Borrowed(&stream.point_buffer[range]);
                     let data = protocol::command::Data { points };
                     send_command(&mut stream.bytes, &mut stream.tcp_writer, data)?;
-                    command_bytes.push(protocol::command::Data::START_BYTE);
+                    protocol::command::Data::START_BYTE
                 }
                 QueuedCommand::Stop => {
                     stream.send_command(protocol::command::Stop)?;
-                    command_bytes.push(protocol::command::Stop::START_BYTE);
+                    protocol::command::Stop::START_BYTE
                 }
                 QueuedCommand::EmergencyStop => {
                     stream.send_command(protocol::command::EmergencyStop)?;
-                    command_bytes.push(protocol::command::EmergencyStop::START_BYTE);
+                    protocol::command::EmergencyStop::START_BYTE
                 }
                 QueuedCommand::ClearEmergencyStop => {
                     stream.send_command(protocol::command::ClearEmergencyStop)?;
-                    command_bytes.push(protocol::command::ClearEmergencyStop::START_BYTE);
+                    protocol::command::ClearEmergencyStop::START_BYTE
                 }
                 QueuedCommand::Ping => {
                     stream.send_command(protocol::command::Ping)?;
-                    command_bytes.push(protocol::command::Ping::START_BYTE);
+                    protocol::command::Ping::START_BYTE
                 }
-            }
+            };
+            command_bytes.push(start_byte);
         }
 
         mem::swap(&mut stream.command_buffer, &mut command_buffer);
 
-        for command_byte in command_bytes.drain(..) {
+        for command_byte in command_bytes {
             stream.recv_response(command_byte)?;
         }
 
@@ -274,12 +275,12 @@ impl protocol::DacResponse {
 
 impl Nak {
     pub fn from_protocol(nak: u8) -> Option<Self> {
-        match nak {
-            protocol::DacResponse::NAK_FULL => Some(Nak::Full),
-            protocol::DacResponse::NAK_INVALID => Some(Nak::Invalid),
-            protocol::DacResponse::NAK_STOP_CONDITION => Some(Nak::StopCondition),
-            _ => None,
-        }
+        Some(match nak {
+            protocol::DacResponse::NAK_FULL => Nak::Full,
+            protocol::DacResponse::NAK_INVALID => Nak::Invalid,
+            protocol::DacResponse::NAK_STOP_CONDITION => Nak::StopCondition,
+            _ => return None,
+        })
     }
 
     pub fn to_protocol(&self) -> u8 {

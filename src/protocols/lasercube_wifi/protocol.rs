@@ -260,15 +260,12 @@ pub mod command {
 
     /// Build an ENABLE_BUFFER_SIZE_RESPONSE command.
     pub fn enable_buffer_size_response(enable: bool) -> [u8; 2] {
-        [
-            CMD_ENABLE_BUFFER_SIZE_RESPONSE,
-            if enable { 0x01 } else { 0x00 },
-        ]
+        [CMD_ENABLE_BUFFER_SIZE_RESPONSE, u8::from(enable)]
     }
 
     /// Build a SET_OUTPUT command.
     pub fn set_output(enable: bool) -> [u8; 2] {
-        [CMD_SET_OUTPUT, if enable { 0x01 } else { 0x00 }]
+        [CMD_SET_OUTPUT, u8::from(enable)]
     }
 
     /// Build a SET_RATE command.

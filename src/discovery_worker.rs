@@ -7,7 +7,7 @@
 //! [`use_callback_workers()`](DacDiscoveryWorkerBuilder::use_callback_workers) to get
 //! [`DacCallbackWorker`] instances instead, where the DAC drives timing via callbacks.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 #[cfg(all(feature = "idn", feature = "testutils"))]
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -16,9 +16,7 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crate::discovery::CustomDiscoverySource;
-use crate::discovery::DacDiscovery;
-use crate::discovery::DiscoveredDeviceInfo;
+use crate::discovery::{CustomDiscoverySource, DacDiscovery, DiscoveredDeviceInfo};
 use crate::types::{DiscoveredDac, EnabledDacTypes};
 use crate::worker::{DacCallbackWorker, DacWorker, DisconnectNotifier};
 
@@ -141,12 +139,10 @@ impl DacDiscoveryWorkerBuilder {
         let running_clone = Arc::clone(&running);
 
         // Create callback worker channel if requested
-        let (callback_worker_tx, callback_worker_rx) = if self.use_callback_workers {
-            let (tx, rx) = mpsc::channel::<DacCallbackWorker>();
-            (Some(tx), Some(rx))
-        } else {
-            (None, None)
-        };
+        let (callback_worker_tx, callback_worker_rx) = self
+            .use_callback_workers
+            .then(mpsc::channel::<DacCallbackWorker>)
+            .unzip();
 
         let device_filter = self
             .device_filter
@@ -162,24 +158,19 @@ impl DacDiscoveryWorkerBuilder {
             discovery.set_idn_scan_addresses(self.idn_scan_addresses);
         }
 
-        let disconnect_tx_for_loop = disconnect_tx.clone();
-        let enabled_types = self.enabled_types;
-        let discovery_interval = self.discovery_interval;
-        let custom_sources = self.custom_sources;
-
         let handle = thread::spawn(move || {
             discovery_loop(
                 discovery,
                 worker_tx,
                 callback_worker_tx,
                 device_tx,
-                disconnect_tx_for_loop,
+                disconnect_tx,
                 disconnect_rx,
-                enabled_types,
+                self.enabled_types,
                 device_filter,
-                discovery_interval,
+                self.discovery_interval,
                 running_clone,
-                custom_sources,
+                self.custom_sources,
             );
         });
 
@@ -313,8 +304,7 @@ fn discovery_loop(
     let mut last_discovery = Instant::now() - discovery_interval;
 
     // Store custom devices for connection attempts (id -> DiscoveredDac)
-    let mut custom_devices: std::collections::HashMap<String, DiscoveredDac> =
-        std::collections::HashMap::new();
+    let mut custom_devices: HashMap<String, DiscoveredDac> = HashMap::new();
 
     // Set initial enabled types
     discovery.set_enabled(enabled_types);
@@ -344,9 +334,7 @@ fn discovery_loop(
                 continue;
             }
 
-            // Always report discovered device (once)
             if device_tx.send(info.clone()).is_err() {
-                // Receiver dropped, exit
                 return;
             }
             reported_devices.insert(name.clone());
@@ -356,37 +344,34 @@ fn discovery_loop(
                 continue;
             }
 
-            // Try to connect
-            match discovery.connect(device) {
-                Ok(backend) => {
-                    // Create callback worker or regular worker depending on mode
-                    if let Some(ref tx) = callback_worker_tx {
-                        let worker = DacCallbackWorker::new_with_disconnect_notifier(
-                            name.clone(),
-                            info.dac_type,
-                            backend,
-                            disconnect_tx.clone(),
-                        );
-                        if tx.send(worker).is_err() {
-                            // Receiver dropped, exit
-                            return;
-                        }
-                    } else {
-                        let worker = DacWorker::new_with_disconnect_notifier(
-                            name.clone(),
-                            info.dac_type,
-                            backend,
-                            disconnect_tx.clone(),
-                        );
-                        if worker_tx.send(worker).is_err() {
-                            // Receiver dropped, exit
-                            return;
-                        }
-                    }
-                }
+            let backend = match discovery.connect(device) {
+                Ok(b) => b,
                 Err(_) => {
-                    // Connection failed, remove from reported so we can retry next cycle
                     reported_devices.remove(&name);
+                    continue;
+                }
+            };
+
+            // Create callback worker or regular worker depending on mode
+            if let Some(ref tx) = callback_worker_tx {
+                let worker = DacCallbackWorker::new_with_disconnect_notifier(
+                    name.clone(),
+                    info.dac_type,
+                    backend,
+                    disconnect_tx.clone(),
+                );
+                if tx.send(worker).is_err() {
+                    return;
+                }
+            } else {
+                let worker = DacWorker::new_with_disconnect_notifier(
+                    name.clone(),
+                    info.dac_type,
+                    backend,
+                    disconnect_tx.clone(),
+                );
+                if worker_tx.send(worker).is_err() {
+                    return;
                 }
             }
         }
@@ -402,56 +387,47 @@ fn discovery_loop(
                     continue;
                 }
 
-                // Convert to DiscoveredDeviceInfo for reporting and filtering
                 let info: DiscoveredDeviceInfo = (&dac).into();
 
-                // Always report discovered device (once)
                 if device_tx.send(info.clone()).is_err() {
-                    // Receiver dropped, exit
                     return;
                 }
                 reported_devices.insert(id.clone());
 
-                // Store the device for connection
-                custom_devices.insert(id.clone(), dac);
-
                 // Only connect if filter passes
                 if !device_filter(&info) {
+                    custom_devices.insert(id, dac);
                     continue;
                 }
 
-                // Try to connect via the custom source
-                if let Some(dac) = custom_devices.get(&id) {
-                    if let Some(backend) = source.create_backend(dac) {
-                        // Create callback worker or regular worker depending on mode
-                        if let Some(ref tx) = callback_worker_tx {
-                            let worker = DacCallbackWorker::new_with_disconnect_notifier(
-                                id.clone(),
-                                info.dac_type.clone(),
-                                backend,
-                                disconnect_tx.clone(),
-                            );
-                            if tx.send(worker).is_err() {
-                                // Receiver dropped, exit
-                                return;
-                            }
-                        } else {
-                            let worker = DacWorker::new_with_disconnect_notifier(
-                                id.clone(),
-                                info.dac_type.clone(),
-                                backend,
-                                disconnect_tx.clone(),
-                            );
-                            if worker_tx.send(worker).is_err() {
-                                // Receiver dropped, exit
-                                return;
-                            }
-                        }
-                    } else {
-                        // Connection failed, remove from reported so we can retry next cycle
-                        reported_devices.remove(&id);
+                let Some(backend) = source.create_backend(&dac) else {
+                    reported_devices.remove(&id);
+                    continue;
+                };
+
+                // Create callback worker or regular worker depending on mode
+                if let Some(ref tx) = callback_worker_tx {
+                    let worker = DacCallbackWorker::new_with_disconnect_notifier(
+                        id.clone(),
+                        info.dac_type.clone(),
+                        backend,
+                        disconnect_tx.clone(),
+                    );
+                    if tx.send(worker).is_err() {
+                        return;
+                    }
+                } else {
+                    let worker = DacWorker::new_with_disconnect_notifier(
+                        id.clone(),
+                        info.dac_type.clone(),
+                        backend,
+                        disconnect_tx.clone(),
+                    );
+                    if worker_tx.send(worker).is_err() {
+                        return;
                     }
                 }
+                custom_devices.insert(id, dac);
             }
         }
     }

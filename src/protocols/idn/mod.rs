@@ -156,17 +156,13 @@ impl ServerScanner {
                         addr_to_unit.insert(addr, response.unit_id);
                     }
                 }
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    // Timeout on recv, continue waiting
+                Err(e)
+                    if e.kind() == io::ErrorKind::WouldBlock
+                        || e.kind() == io::ErrorKind::TimedOut =>
+                {
                     continue;
                 }
-                Err(e) if e.kind() == io::ErrorKind::TimedOut => {
-                    // Timeout on recv, continue waiting
-                    continue;
-                }
-                Err(_) => {
-                    // Ignore other errors
-                }
+                Err(_) => {}
             }
         }
 
@@ -338,14 +334,10 @@ impl ServerScanner {
         while start.elapsed() < timeout {
             match self.recv_scan_response_with_port() {
                 Ok((response, src_addr)) => {
-                    // Use the actual source address (including port) for non-broadcast scans
-                    // This allows testing with mock servers on non-standard ports
-                    let response_addr = src_addr;
-
-                    if let Some(unit_id) = addr_to_unit.get(&response_addr) {
+                    if let Some(unit_id) = addr_to_unit.get(&src_addr) {
                         if let Some(server) = servers.get_mut(unit_id) {
-                            if !server.addresses.contains(&response_addr) {
-                                server.addresses.push(response_addr);
+                            if !server.addresses.contains(&src_addr) {
+                                server.addresses.push(src_addr);
                             }
                         }
                     } else {
@@ -361,14 +353,18 @@ impl ServerScanner {
                             )
                         });
 
-                        if !entry.addresses.contains(&response_addr) {
-                            entry.addresses.push(response_addr);
+                        if !entry.addresses.contains(&src_addr) {
+                            entry.addresses.push(src_addr);
                         }
-                        addr_to_unit.insert(response_addr, response.unit_id);
+                        addr_to_unit.insert(src_addr, response.unit_id);
                     }
                 }
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
-                Err(e) if e.kind() == io::ErrorKind::TimedOut => continue,
+                Err(e)
+                    if e.kind() == io::ErrorKind::WouldBlock
+                        || e.kind() == io::ErrorKind::TimedOut =>
+                {
+                    continue;
+                }
                 Err(_) => {}
             }
         }

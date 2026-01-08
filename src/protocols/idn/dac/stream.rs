@@ -569,15 +569,13 @@ impl Stream {
 
         let len = match self.socket.recv(&mut self.recv_buffer) {
             Ok(len) => len,
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+            Err(e)
+                if e.kind() == io::ErrorKind::WouldBlock
+                    || e.kind() == io::ErrorKind::TimedOut =>
+            {
                 return Err(CommunicationError::Response(ResponseError::Timeout));
             }
-            Err(e) if e.kind() == io::ErrorKind::TimedOut => {
-                return Err(CommunicationError::Response(ResponseError::Timeout));
-            }
-            Err(e) => {
-                return Err(CommunicationError::Io(e));
-            }
+            Err(e) => return Err(CommunicationError::Io(e)),
         };
 
         if len < PacketHeader::SIZE_BYTES + AcknowledgeResponse::SIZE_BYTES {
@@ -640,15 +638,13 @@ impl Stream {
 
         let len = match self.socket.recv(&mut self.recv_buffer) {
             Ok(len) => len,
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+            Err(e)
+                if e.kind() == io::ErrorKind::WouldBlock
+                    || e.kind() == io::ErrorKind::TimedOut =>
+            {
                 return Err(CommunicationError::Response(ResponseError::Timeout));
             }
-            Err(e) if e.kind() == io::ErrorKind::TimedOut => {
-                return Err(CommunicationError::Response(ResponseError::Timeout));
-            }
-            Err(e) => {
-                return Err(CommunicationError::Io(e));
-            }
+            Err(e) => return Err(CommunicationError::Io(e)),
         };
 
         if len < PacketHeader::SIZE_BYTES {
@@ -695,10 +691,10 @@ impl Stream {
 
         let len = match self.socket.recv(&mut self.recv_buffer) {
             Ok(len) => len,
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                return Err(CommunicationError::Response(ResponseError::Timeout));
-            }
-            Err(e) if e.kind() == io::ErrorKind::TimedOut => {
+            Err(e)
+                if e.kind() == io::ErrorKind::WouldBlock
+                    || e.kind() == io::ErrorKind::TimedOut =>
+            {
                 return Err(CommunicationError::Response(ResponseError::Timeout));
             }
             Err(e) => return Err(CommunicationError::Io(e)),
@@ -755,10 +751,10 @@ impl Stream {
 
         let len = match self.socket.recv(&mut self.recv_buffer) {
             Ok(len) => len,
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                return Err(CommunicationError::Response(ResponseError::Timeout));
-            }
-            Err(e) if e.kind() == io::ErrorKind::TimedOut => {
+            Err(e)
+                if e.kind() == io::ErrorKind::WouldBlock
+                    || e.kind() == io::ErrorKind::TimedOut =>
+            {
                 return Err(CommunicationError::Response(ResponseError::Timeout));
             }
             Err(e) => return Err(CommunicationError::Io(e)),
@@ -818,10 +814,10 @@ impl Stream {
 
         let len = match self.socket.recv(&mut self.recv_buffer) {
             Ok(len) => len,
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                return Err(CommunicationError::Response(ResponseError::Timeout));
-            }
-            Err(e) if e.kind() == io::ErrorKind::TimedOut => {
+            Err(e)
+                if e.kind() == io::ErrorKind::WouldBlock
+                    || e.kind() == io::ErrorKind::TimedOut =>
+            {
                 return Err(CommunicationError::Response(ResponseError::Timeout));
             }
             Err(e) => return Err(CommunicationError::Io(e)),
@@ -891,10 +887,10 @@ impl Stream {
 
         let len = match self.socket.recv(&mut self.recv_buffer) {
             Ok(len) => len,
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                return Err(CommunicationError::Response(ResponseError::Timeout));
-            }
-            Err(e) if e.kind() == io::ErrorKind::TimedOut => {
+            Err(e)
+                if e.kind() == io::ErrorKind::WouldBlock
+                    || e.kind() == io::ErrorKind::TimedOut =>
+            {
                 return Err(CommunicationError::Response(ResponseError::Timeout));
             }
             Err(e) => return Err(CommunicationError::Io(e)),

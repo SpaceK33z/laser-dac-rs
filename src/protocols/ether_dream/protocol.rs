@@ -381,13 +381,11 @@ pub mod command {
 
         pub fn read_points<R: ReadBytesExt>(
             mut reader: R,
-            mut n_points: u16,
+            n_points: u16,
             points: &mut Vec<DacPoint>,
         ) -> io::Result<()> {
-            while n_points > 0 {
-                let dac_point = reader.read_bytes::<DacPoint>()?;
-                points.push(dac_point);
-                n_points -= 1;
+            for _ in 0..n_points {
+                points.push(reader.read_bytes::<DacPoint>()?);
             }
             Ok(())
         }

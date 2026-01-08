@@ -72,13 +72,8 @@ fn main() -> Result<()> {
 
     // Main loop just monitors status - the callbacks do the real work
     loop {
-        let mut any_alive = false;
-        for worker in &mut workers {
-            worker.update();
-            if worker.is_running() {
-                any_alive = true;
-            }
-        }
+        workers.iter_mut().for_each(|w| w.update());
+        let any_alive = workers.iter().any(|w| w.is_running());
 
         // Print frame count periodically
         let frames = total_frames.load(Ordering::Relaxed);

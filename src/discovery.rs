@@ -274,17 +274,15 @@ impl HeliosDiscovery {
     ///
     /// Returns None if the USB controller fails to initialize.
     pub fn new() -> Option<Self> {
-        match HeliosDacController::new() {
-            Ok(controller) => Some(Self { controller }),
-            Err(_) => None,
-        }
+        HeliosDacController::new()
+            .ok()
+            .map(|controller| Self { controller })
     }
 
     /// Scan for available Helios devices.
     pub fn scan(&self) -> Vec<DiscoveredDevice> {
-        let devices = match self.controller.list_devices() {
-            Ok(devs) => devs,
-            Err(_) => return Vec::new(),
+        let Ok(devices) = self.controller.list_devices() else {
+            return Vec::new();
         };
 
         let mut discovered = Vec::new();
@@ -344,11 +342,8 @@ impl EtherDreamDiscovery {
 
     /// Scan for available Ether Dream devices.
     pub fn scan(&mut self) -> Vec<DiscoveredDevice> {
-        let mut rx = match recv_dac_broadcasts() {
-            Ok(rx) => rx,
-            Err(_) => {
-                return Vec::new();
-            }
+        let Ok(mut rx) = recv_dac_broadcasts() else {
+            return Vec::new();
         };
 
         if rx.set_timeout(Some(self.timeout)).is_err() {
@@ -429,17 +424,14 @@ impl IdnDiscovery {
 
     /// Scan for available IDN devices.
     pub fn scan(&mut self) -> Vec<DiscoveredDevice> {
-        let servers = match scan_for_servers(self.scan_timeout) {
-            Ok(s) => s,
-            Err(_) => return Vec::new(),
+        let Ok(servers) = scan_for_servers(self.scan_timeout) else {
+            return Vec::new();
         };
 
         let mut discovered = Vec::new();
         for server in servers {
-            // Get service first before moving server
-            let service = match server.find_laser_projector() {
-                Some(service) => service.clone(),
-                None => continue,
+            let Some(service) = server.find_laser_projector().cloned() else {
+                continue;
             };
 
             let ip_address = server.addresses.first().map(|addr| addr.ip());
@@ -472,21 +464,18 @@ impl IdnDiscovery {
     /// This is useful for testing with mock servers on localhost where
     /// broadcast won't work.
     pub fn scan_address(&mut self, addr: SocketAddr) -> Vec<DiscoveredDevice> {
-        let mut scanner = match ServerScanner::new(0) {
-            Ok(s) => s,
-            Err(_) => return Vec::new(),
+        let Ok(mut scanner) = ServerScanner::new(0) else {
+            return Vec::new();
         };
 
-        let servers = match scanner.scan_address(addr, self.scan_timeout) {
-            Ok(s) => s,
-            Err(_) => return Vec::new(),
+        let Ok(servers) = scanner.scan_address(addr, self.scan_timeout) else {
+            return Vec::new();
         };
 
         let mut discovered = Vec::new();
         for server in servers {
-            let service = match server.find_laser_projector() {
-                Some(service) => service.clone(),
-                None => continue,
+            let Some(service) = server.find_laser_projector().cloned() else {
+                continue;
             };
 
             let ip_address = server.addresses.first().map(|addr| addr.ip());
@@ -530,9 +519,8 @@ impl LasercubeWifiDiscovery {
 
     /// Scan for available LaserCube WiFi devices.
     pub fn scan(&mut self) -> Vec<DiscoveredDevice> {
-        let mut discovery = match discover_lasercube_wifi() {
-            Ok(d) => d,
-            Err(_) => return Vec::new(),
+        let Ok(mut discovery) = discover_lasercube_wifi() else {
+            return Vec::new();
         };
 
         if discovery.set_timeout(Some(self.timeout)).is_err() {
@@ -596,17 +584,15 @@ impl LasercubeUsbDiscovery {
     ///
     /// Returns None if the USB controller fails to initialize.
     pub fn new() -> Option<Self> {
-        match LasercubeUsbController::new() {
-            Ok(controller) => Some(Self { controller }),
-            Err(_) => None,
-        }
+        LasercubeUsbController::new()
+            .ok()
+            .map(|controller| Self { controller })
     }
 
     /// Scan for available LaserCube USB devices.
     pub fn scan(&self) -> Vec<DiscoveredDevice> {
-        let devices = match self.controller.list_devices() {
-            Ok(devs) => devs,
-            Err(_) => return Vec::new(),
+        let Ok(devices) = self.controller.list_devices() else {
+            return Vec::new();
         };
 
         let mut discovered = Vec::new();

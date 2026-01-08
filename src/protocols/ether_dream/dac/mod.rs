@@ -219,13 +219,13 @@ impl Status {
 
 impl LightEngine {
     pub fn from_protocol(state: u8) -> Option<Self> {
-        match state {
-            protocol::DacStatus::LIGHT_ENGINE_READY => Some(LightEngine::Ready),
-            protocol::DacStatus::LIGHT_ENGINE_WARMUP => Some(LightEngine::Warmup),
-            protocol::DacStatus::LIGHT_ENGINE_COOLDOWN => Some(LightEngine::Cooldown),
-            protocol::DacStatus::LIGHT_ENGINE_EMERGENCY_STOP => Some(LightEngine::EmergencyStop),
-            _ => None,
-        }
+        Some(match state {
+            protocol::DacStatus::LIGHT_ENGINE_READY => LightEngine::Ready,
+            protocol::DacStatus::LIGHT_ENGINE_WARMUP => LightEngine::Warmup,
+            protocol::DacStatus::LIGHT_ENGINE_COOLDOWN => LightEngine::Cooldown,
+            protocol::DacStatus::LIGHT_ENGINE_EMERGENCY_STOP => LightEngine::EmergencyStop,
+            _ => return None,
+        })
     }
 
     pub fn to_protocol(&self) -> u8 {
@@ -240,12 +240,12 @@ impl LightEngine {
 
 impl Playback {
     pub fn from_protocol(state: u8) -> Option<Self> {
-        match state {
-            protocol::DacStatus::PLAYBACK_IDLE => Some(Playback::Idle),
-            protocol::DacStatus::PLAYBACK_PREPARED => Some(Playback::Prepared),
-            protocol::DacStatus::PLAYBACK_PLAYING => Some(Playback::Playing),
-            _ => None,
-        }
+        Some(match state {
+            protocol::DacStatus::PLAYBACK_IDLE => Playback::Idle,
+            protocol::DacStatus::PLAYBACK_PREPARED => Playback::Prepared,
+            protocol::DacStatus::PLAYBACK_PLAYING => Playback::Playing,
+            _ => return None,
+        })
     }
 
     pub fn to_protocol(&self) -> u8 {
@@ -259,18 +259,18 @@ impl Playback {
 
 impl DataSource {
     pub fn from_protocol(source: u8, flags: u16) -> Option<Self> {
-        match source {
-            protocol::DacStatus::SOURCE_NETWORK_STREAMING => Some(DataSource::NetworkStreaming),
-            protocol::DacStatus::SOURCE_ILDA_PLAYBACK_SD => Some(DataSource::IldaPlayback(
-                IldaPlaybackFlags::from_bits_truncate(flags),
-            )),
-            protocol::DacStatus::SOURCE_INTERNAL_ABSTRACT_GENERATOR => {
-                Some(DataSource::InternalAbstractGenerator(
-                    InternalAbstractGeneratorFlags::from_bits_truncate(flags),
-                ))
+        Some(match source {
+            protocol::DacStatus::SOURCE_NETWORK_STREAMING => DataSource::NetworkStreaming,
+            protocol::DacStatus::SOURCE_ILDA_PLAYBACK_SD => {
+                DataSource::IldaPlayback(IldaPlaybackFlags::from_bits_truncate(flags))
             }
-            _ => None,
-        }
+            protocol::DacStatus::SOURCE_INTERNAL_ABSTRACT_GENERATOR => {
+                DataSource::InternalAbstractGenerator(
+                    InternalAbstractGeneratorFlags::from_bits_truncate(flags),
+                )
+            }
+            _ => return None,
+        })
     }
 
     pub fn to_protocol(&self) -> (u8, u16) {

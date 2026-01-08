@@ -146,30 +146,33 @@ fn get_local_interfaces() -> io::Result<Vec<Ipv4Addr>> {
         let mut current = ifaddrs;
         while !current.is_null() {
             let ifa = &*current;
+            current = ifa.ifa_next;
 
-            if !ifa.ifa_addr.is_null() {
-                let family = (*ifa.ifa_addr).sa_family as i32;
-                if family == libc::AF_INET {
-                    let addr = ifa.ifa_addr as *const libc::sockaddr_in;
-                    let ip_bytes = (*addr).sin_addr.s_addr.to_ne_bytes();
-                    let ip = Ipv4Addr::new(ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]);
-
-                    // Skip loopback
-                    if !ip.is_loopback() {
-                        // Check if interface name doesn't start with "lo"
-                        if !ifa.ifa_name.is_null() {
-                            let name = CStr::from_ptr(ifa.ifa_name);
-                            if let Ok(name_str) = name.to_str() {
-                                if !name_str.starts_with("lo") {
-                                    interfaces.push(ip);
-                                }
-                            }
-                        }
-                    }
-                }
+            if ifa.ifa_addr.is_null() || ifa.ifa_name.is_null() {
+                continue;
             }
 
-            current = ifa.ifa_next;
+            let family = (*ifa.ifa_addr).sa_family as i32;
+            if family != libc::AF_INET {
+                continue;
+            }
+
+            let addr = ifa.ifa_addr as *const libc::sockaddr_in;
+            let ip_bytes = (*addr).sin_addr.s_addr.to_ne_bytes();
+            let ip = Ipv4Addr::new(ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]);
+
+            if ip.is_loopback() {
+                continue;
+            }
+
+            let name = CStr::from_ptr(ifa.ifa_name);
+            let Ok(name_str) = name.to_str() else {
+                continue;
+            };
+
+            if !name_str.starts_with("lo") {
+                interfaces.push(ip);
+            }
         }
 
         libc::freeifaddrs(ifaddrs);

@@ -101,14 +101,12 @@ mod helios_backend {
         }
 
         fn connect(&mut self) -> Result<()> {
-            if self.dac.is_some() {
+            if let Some(dac) = self.dac.take() {
                 // Already have a DAC, try to open it if idle
-                if let Some(dac) = self.dac.take() {
-                    let dac = dac
-                        .open()
-                        .map_err(|e| Error::context("Failed to open device", e))?;
-                    self.dac = Some(dac);
-                }
+                self.dac = Some(
+                    dac.open()
+                        .map_err(|e| Error::context("Failed to open device", e))?,
+                );
                 return Ok(());
             }
 
@@ -279,9 +277,7 @@ mod ether_dream_backend {
                 LightEngine::Warmup | LightEngine::Cooldown => {
                     return Ok(WriteResult::DeviceBusy);
                 }
-                LightEngine::Ready => {
-                    // Normal operation - continue
-                }
+                LightEngine::Ready => {}
             }
 
             // Check buffer space
@@ -312,11 +308,7 @@ mod ether_dream_backend {
                 points_to_send.truncate(available);
             } else if points_to_send.len() < target_len {
                 let seed = points_to_send.clone();
-                let mut idx = 0;
-                while points_to_send.len() < target_len {
-                    points_to_send.push(seed[idx % seed.len()]);
-                    idx += 1;
-                }
+                points_to_send.extend(seed.iter().cycle().take(target_len - points_to_send.len()));
             }
 
             let playback_flags = stream.dac().status.playback_flags;
@@ -352,40 +344,22 @@ mod ether_dream_backend {
                     }
                 } else {
                     match playback {
-                        Playback::Idle => {
-                            stream
-                                .queue_commands()
-                                .prepare_stream()
-                                .submit()
-                                .map_err(|e| Error::context("Failed to prepare stream", e))?;
-
-                            // Send data first
-                            stream
-                                .queue_commands()
-                                .data(points_to_send.clone())
-                                .submit()
-                                .map_err(|e| Error::context("Failed to send data", e))?;
-
-                            // Check buffer fullness after sending data, only begin if enough points buffered
-                            let buffer_fullness = stream.dac().status.buffer_fullness;
-
-                            if buffer_fullness >= MIN_POINTS_BEFORE_BEGIN {
-                                stream.queue_commands().begin(0, point_rate).submit()
-                            } else {
-                                Ok(())
+                        Playback::Idle | Playback::Prepared => {
+                            if playback == Playback::Idle {
+                                stream
+                                    .queue_commands()
+                                    .prepare_stream()
+                                    .submit()
+                                    .map_err(|e| Error::context("Failed to prepare stream", e))?;
                             }
-                        }
-                        Playback::Prepared => {
-                            // Send data first
+
                             stream
                                 .queue_commands()
                                 .data(points_to_send.clone())
                                 .submit()
                                 .map_err(|e| Error::context("Failed to send data", e))?;
 
-                            // Check buffer fullness after sending data, only begin if enough points buffered
                             let buffer_fullness = stream.dac().status.buffer_fullness;
-
                             if buffer_fullness >= MIN_POINTS_BEFORE_BEGIN {
                                 stream.queue_commands().begin(0, point_rate).submit()
                             } else {

@@ -49,17 +49,16 @@ impl HeliosDacController {
 
     /// List all connected Helios DAC devices.
     pub fn list_devices(&self) -> Result<Vec<HeliosDac>> {
-        let devices = self.context.devices()?;
-        let mut dacs = vec![];
-        for device in devices.iter() {
-            let descriptor = device.device_descriptor()?;
-            if descriptor.vendor_id() != HELIOS_VID || descriptor.product_id() != HELIOS_PID {
-                continue;
-            }
-            let dac = device.into();
-            dacs.push(dac);
-        }
-
+        let dacs = self
+            .context
+            .devices()?
+            .iter()
+            .filter_map(|device| {
+                let descriptor = device.device_descriptor().ok()?;
+                (descriptor.vendor_id() == HELIOS_VID && descriptor.product_id() == HELIOS_PID)
+                    .then(|| device.into())
+            })
+            .collect();
         Ok(dacs)
     }
 }
@@ -131,7 +130,7 @@ impl HeliosDac {
             let timeout = ((8 + frame_buffer.len()) >> 5) as u64;
             handle.write_bulk(
                 ENDPOINT_BULK_OUT,
-                &frame_buffer[0..],
+                &frame_buffer,
                 Duration::from_millis(timeout),
             )?;
 
@@ -164,15 +163,7 @@ impl HeliosDac {
         let (buffer, size) = self.call_control(&ctrl_buffer)?;
 
         match &buffer[0..size] {
-            [0x84, buffer @ ..] => {
-                let buffer = buffer
-                    .iter()
-                    .map(|byte| u32::from(*byte))
-                    .collect::<Vec<_>>();
-                let version = buffer[0] | (buffer[1] << 8) | (buffer[2] << 16) | (buffer[3] << 24);
-
-                Ok(version)
-            }
+            [0x84, b0, b1, b2, b3, ..] => Ok(u32::from_le_bytes([*b0, *b1, *b2, *b3])),
             _ => Err(HeliosDacError::InvalidDeviceResult),
         }
     }

@@ -25,7 +25,7 @@
 
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver as MpscReceiver, Sender, SyncSender, TrySendError};
+use std::sync::mpsc::{self, Receiver as MpscReceiver, Sender, SyncSender};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -186,11 +186,9 @@ impl DacWorker {
     ///
     /// Returns true if the frame was queued, false if dropped (device busy).
     pub fn submit_frame(&self, frame: LaserFrame) -> bool {
-        match self.command_tx.try_send(WorkerCommand::WriteFrame(frame)) {
-            Ok(()) => true,
-            Err(TrySendError::Full(_)) => false,
-            Err(TrySendError::Disconnected(_)) => false,
-        }
+        self.command_tx
+            .try_send(WorkerCommand::WriteFrame(frame))
+            .is_ok()
     }
 
     /// Polls for status updates from the worker thread.
@@ -340,16 +338,7 @@ impl DacCallbackWorker {
     /// This two-phase construction allows you to inspect the device before
     /// deciding what callbacks to use.
     pub fn new(device_name: String, dac_type: DacType, backend: Box<dyn DacBackend>) -> Self {
-        Self {
-            device_name: device_name.clone(),
-            dac_type,
-            backend: Some(backend),
-            stop_flag: None,
-            status_rx: None,
-            handle: None,
-            state: DacConnectionState::Connected { name: device_name },
-            disconnect_tx: None,
-        }
+        Self::new_internal(device_name, dac_type, backend, None)
     }
 
     /// Internal constructor that optionally accepts a disconnect notifier.
@@ -359,6 +348,15 @@ impl DacCallbackWorker {
         backend: Box<dyn DacBackend>,
         disconnect_tx: DisconnectNotifier,
     ) -> Self {
+        Self::new_internal(device_name, dac_type, backend, Some(disconnect_tx))
+    }
+
+    fn new_internal(
+        device_name: String,
+        dac_type: DacType,
+        backend: Box<dyn DacBackend>,
+        disconnect_tx: Option<DisconnectNotifier>,
+    ) -> Self {
         Self {
             device_name: device_name.clone(),
             dac_type,
@@ -367,7 +365,7 @@ impl DacCallbackWorker {
             status_rx: None,
             handle: None,
             state: DacConnectionState::Connected { name: device_name },
-            disconnect_tx: Some(disconnect_tx),
+            disconnect_tx,
         }
     }
 

@@ -64,11 +64,7 @@ pub fn recv_dac_broadcasts() -> io::Result<RecvDacBroadcasts> {
 impl RecvDacBroadcasts {
     /// Attempt to read the next broadcast.
     pub fn next_broadcast(&mut self) -> io::Result<(protocol::DacBroadcast, net::SocketAddr)> {
-        let RecvDacBroadcasts {
-            ref mut buffer,
-            ref mut udp_socket,
-        } = *self;
-        let (len, src_addr) = udp_socket.recv_from(buffer)?;
+        let (len, src_addr) = self.udp_socket.recv_from(&mut self.buffer)?;
         if len < protocol::DacBroadcast::SIZE_BYTES {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
@@ -79,7 +75,7 @@ impl RecvDacBroadcasts {
                 ),
             ));
         }
-        let mut bytes = &buffer[..len];
+        let mut bytes = &self.buffer[..len];
         let dac_broadcast = bytes.read_bytes::<protocol::DacBroadcast>()?;
         Ok((dac_broadcast, src_addr))
     }
