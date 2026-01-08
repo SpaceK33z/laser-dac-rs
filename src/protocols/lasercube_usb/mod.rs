@@ -110,9 +110,9 @@ pub fn discover_dacs() -> Result<Vec<rusb::Device<rusb::Context>>> {
 
 /// Check if a USB device is a LaserCube/LaserDock.
 pub fn is_laserdock_device<T: UsbContext>(device: &rusb::Device<T>) -> bool {
-    device.device_descriptor().is_ok_and(|d| {
-        d.vendor_id() == LASERDOCK_VID && d.product_id() == LASERDOCK_PID
-    })
+    device
+        .device_descriptor()
+        .is_ok_and(|d| d.vendor_id() == LASERDOCK_VID && d.product_id() == LASERDOCK_PID)
 }
 
 /// Read the serial number from a LaserCube USB device.
