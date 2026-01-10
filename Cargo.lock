@@ -202,7 +202,7 @@ dependencies = [
 
 [[package]]
 name = "laser-dac"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "bitflags",
  "byteorder",
