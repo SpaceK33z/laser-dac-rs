@@ -295,7 +295,6 @@ mod ether_dream_backend {
                 stream.dac().max_point_rate / 16
             };
 
-            // Minimum points that must be buffered before sending begin command.
             const MIN_POINTS_BEFORE_BEGIN: u16 = 500;
             let target_buffer_points =
                 (point_rate / 20).max(MIN_POINTS_BEFORE_BEGIN as u32) as usize;

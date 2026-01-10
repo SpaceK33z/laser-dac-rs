@@ -44,7 +44,8 @@
 //! loop {
 //!     for worker in &mut workers {
 //!         worker.update();
-//!         worker.submit_frame(frame.clone());
+//!         // Returns false if previous frame hasn't been consumed yet (frame dropped)
+//!         let _accepted = worker.submit_frame(frame.clone());
 //!     }
 //!     thread::sleep(Duration::from_millis(33));
 //! }

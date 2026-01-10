@@ -147,15 +147,11 @@ impl DiscoveredDevice {
     /// For network devices: IP address.
     /// For USB devices: hardware name or bus:address.
     pub fn name(&self) -> String {
-        if let Some(ip) = self.ip_address {
-            ip.to_string()
-        } else if let Some(ref hw_name) = self.hardware_name {
-            hw_name.clone()
-        } else if let Some(ref usb) = self.usb_address {
-            usb.clone()
-        } else {
-            "Unknown".to_string()
-        }
+        self.ip_address
+            .map(|ip| ip.to_string())
+            .or_else(|| self.hardware_name.clone())
+            .or_else(|| self.usb_address.clone())
+            .unwrap_or_else(|| "Unknown".to_string())
     }
 
     /// Returns the DAC type.
@@ -201,15 +197,11 @@ impl DiscoveredDeviceInfo {
     /// For network devices: IP address.
     /// For USB devices: hardware name or bus:address.
     pub fn name(&self) -> String {
-        if let Some(ip) = self.ip_address {
-            ip.to_string()
-        } else if let Some(ref hw_name) = self.hardware_name {
-            hw_name.clone()
-        } else if let Some(ref usb) = self.usb_address {
-            usb.clone()
-        } else {
-            "Unknown".to_string()
-        }
+        self.ip_address
+            .map(|ip| ip.to_string())
+            .or_else(|| self.hardware_name.clone())
+            .or_else(|| self.usb_address.clone())
+            .unwrap_or_else(|| "Unknown".to_string())
     }
 }
 
@@ -357,15 +349,7 @@ impl EtherDreamDiscovery {
         for _ in 0..3 {
             let (broadcast, source_addr) = match rx.next_broadcast() {
                 Ok(b) => b,
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    break;
-                }
-                Err(e) if e.kind() == io::ErrorKind::TimedOut => {
-                    break;
-                }
-                Err(_) => {
-                    break; // Stop on any error instead of continuing
-                }
+                Err(_) => break,
             };
 
             let ip = source_addr.ip();

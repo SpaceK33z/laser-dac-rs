@@ -25,10 +25,10 @@ This crate does not apply any additional processing on points (like blanking), e
 | Helios                     | USB        | ✅       |
 | Ether Dream                | Network    | ✅       |
 | IDN (ILDA Digital Network) | Network    | ✅       | IDN is a standardized protocol. We tested with [HeliosPRO](https://bitlasers.com/heliospro-laser-dac/) |
-| LaserCube WiFi             | Network    | ✅       | Recommend to not use through WiFi mode                                                                 |
+| LaserCube WiFi             | Network    | ✅       | Recommend to not use through WiFi mode; use LAN only                                                       |
 | LaserCube USB / Laserdock  | USB        | ✅       |
 
-All DACs are manually verified to work.
+All DACs have been manually verified to work.
 
 ## Quick Start
 
@@ -105,7 +105,8 @@ loop {
     let frame = create_your_frame();
     for worker in &mut workers {
         worker.update();
-        worker.submit_frame(frame.clone());
+        // Returns false if previous frame hasn't been consumed yet (frame dropped)
+        let _accepted = worker.submit_frame(frame.clone());
     }
     std::thread::sleep(std::time::Duration::from_millis(33));
 }
@@ -116,17 +117,15 @@ loop {
 The DAC drives timing by invoking your callback whenever it's ready for more data. This is ideal when you want the DAC to control the frame rate, or when generating frames on-demand:
 
 ```rust
-use laser_dac::{DacCallbackWorker, CallbackError, LaserFrame};
+use laser_dac::{DacCallbackWorker, CallbackError, EnabledDacTypes, LaserFrame};
 use laser_dac::discovery::DacDiscovery;
 
 let mut discovery = DacDiscovery::new(EnabledDacTypes::all());
 for device in discovery.scan() {
-    let backend = discovery.connect(device.clone())?;
-    let mut worker = DacCallbackWorker::new(
-        device.name().to_string(),
-        device.dac_type(),
-        backend,
-    );
+    let name = device.name().to_string();
+    let dac_type = device.dac_type();
+    let backend = discovery.connect(device)?;
+    let mut worker = DacCallbackWorker::new(name, dac_type, backend);
 
     worker.start(
         // Data callback - invoked when device needs more data

@@ -54,11 +54,12 @@ impl RecvDacBroadcasts {
 /// Produces a `RecvDacBroadcasts` instance that listens and waits for broadcast messages from DACs
 /// on the network and yields them as they are received on the inner UDP socket.
 pub fn recv_dac_broadcasts() -> io::Result<RecvDacBroadcasts> {
-    let broadcast_port = protocol::BROADCAST_PORT;
-    let broadcast_addr = net::SocketAddrV4::new([0, 0, 0, 0].into(), broadcast_port);
+    let broadcast_addr = net::SocketAddrV4::new([0, 0, 0, 0].into(), protocol::BROADCAST_PORT);
     let udp_socket = net::UdpSocket::bind(broadcast_addr)?;
-    let buffer = [0; RecvDacBroadcasts::BUFFER_LEN];
-    Ok(RecvDacBroadcasts { udp_socket, buffer })
+    Ok(RecvDacBroadcasts {
+        udp_socket,
+        buffer: [0; RecvDacBroadcasts::BUFFER_LEN],
+    })
 }
 
 impl RecvDacBroadcasts {

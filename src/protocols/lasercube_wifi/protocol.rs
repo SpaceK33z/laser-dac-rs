@@ -68,16 +68,19 @@ pub trait SizeBytes {
 
 /// A laser point with position and color.
 ///
-/// Coordinates use offset binary encoding where 0x8000 is the center (origin).
-/// - X: 0x0000 = left edge, 0x8000 = center, 0xFFFF = right edge
-/// - Y: 0x0000 = bottom edge, 0x8000 = center, 0xFFFF = top edge
-/// - Colors: 12-bit values (0-4095 typical, stored in u16)
+/// Coordinates and colors are 12-bit values (0-4095).
+/// - X: 0 = right edge, 2047 = center, 4095 = left edge (inverted)
+/// - Y: 0 = top edge, 2047 = center, 4095 = bottom edge (inverted)
+/// - Colors: 12-bit values (0-4095)
+///
+/// Note: When converting from `LaserPoint`, both axes are inverted to match
+/// the LaserCube WiFi hardware orientation.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Point {
-    /// X coordinate (offset binary, 0x8000 = center).
+    /// X coordinate (12-bit, 0-4095, inverted: 0 = right, 4095 = left).
     pub x: u16,
-    /// Y coordinate (offset binary, 0x8000 = center).
+    /// Y coordinate (12-bit, 0-4095, inverted: 0 = top, 4095 = bottom).
     pub y: u16,
     /// Red intensity (12-bit, 0-4095).
     pub r: u16,
@@ -88,8 +91,8 @@ pub struct Point {
 }
 
 impl Point {
-    /// The center coordinate value in offset binary encoding.
-    pub const CENTER: u16 = 0x8000;
+    /// The center coordinate value (12-bit midpoint).
+    pub const CENTER: u16 = 2047;
 
     /// Create a new point at the center with no color (blanked).
     pub fn blank() -> Self {
@@ -102,23 +105,23 @@ impl Point {
         }
     }
 
-    /// Create a new point from signed coordinates (-32768 to 32767) and 12-bit colors.
+    /// Create a new point from signed coordinates (-2048 to 2047) and 12-bit colors.
     ///
-    /// This converts from the typical signed laser coordinate system to offset binary.
+    /// This converts from a signed coordinate system to the 12-bit unsigned range.
     pub fn from_signed(x: i16, y: i16, r: u16, g: u16, b: u16) -> Self {
         Self {
-            x: (x as i32 + 0x8000) as u16,
-            y: (y as i32 + 0x8000) as u16,
+            x: (x as i32 + 2048).clamp(0, 4095) as u16,
+            y: (y as i32 + 2048).clamp(0, 4095) as u16,
             r,
             g,
             b,
         }
     }
 
-    /// Convert this point's coordinates to signed values (-32768 to 32767).
+    /// Convert this point's coordinates to signed values (-2048 to 2047).
     pub fn to_signed(&self) -> (i16, i16) {
-        let x = (self.x as i32 - 0x8000) as i16;
-        let y = (self.y as i32 - 0x8000) as i16;
+        let x = (self.x as i32 - 2048) as i16;
+        let y = (self.y as i32 - 2048) as i16;
         (x, y)
     }
 }

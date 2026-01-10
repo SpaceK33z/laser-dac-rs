@@ -246,26 +246,30 @@ mod tests {
     fn test_point_signed_conversion() {
         use protocol::Point;
 
-        // Test center point
+        // Test center point (0 maps to 2048)
         let p = Point::from_signed(0, 0, 1000, 2000, 3000);
-        assert_eq!(p.x, 0x8000);
-        assert_eq!(p.y, 0x8000);
+        assert_eq!(p.x, 2048);
+        assert_eq!(p.y, 2048);
 
         let (x, y) = p.to_signed();
         assert_eq!(x, 0);
         assert_eq!(y, 0);
 
-        // Test max positive
-        let p = Point::from_signed(32767, 32767, 0, 0, 0);
+        // Test max positive (2047 maps to 4095, clamped)
+        let p = Point::from_signed(2047, 2047, 0, 0, 0);
+        assert_eq!(p.x, 4095);
+        assert_eq!(p.y, 4095);
         let (x, y) = p.to_signed();
-        assert_eq!(x, 32767);
-        assert_eq!(y, 32767);
+        assert_eq!(x, 2047);
+        assert_eq!(y, 2047);
 
-        // Test max negative
-        let p = Point::from_signed(-32768, -32768, 0, 0, 0);
+        // Test max negative (-2048 maps to 0)
+        let p = Point::from_signed(-2048, -2048, 0, 0, 0);
+        assert_eq!(p.x, 0);
+        assert_eq!(p.y, 0);
         let (x, y) = p.to_signed();
-        assert_eq!(x, -32768);
-        assert_eq!(y, -32768);
+        assert_eq!(x, -2048);
+        assert_eq!(y, -2048);
     }
 
     #[test]

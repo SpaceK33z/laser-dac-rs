@@ -546,8 +546,7 @@ pub mod command {
 
     impl ReadFromBytes for PrepareStream {
         fn read_from_bytes<R: ReadBytesExt>(mut reader: R) -> io::Result<Self> {
-            let command = reader.read_u8()?;
-            if command != Self::START_BYTE {
+            if reader.read_u8()? != Self::START_BYTE {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "invalid command",
