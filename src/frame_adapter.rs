@@ -9,21 +9,21 @@ use std::sync::{Arc, Mutex};
 use crate::types::{ChunkRequest, LaserPoint, StreamInstant};
 
 /// A frame of laser points with a conceptual frame rate.
+///
+/// Note: The adapter uses "loop-complete" semantics where a frame lasts exactly
+/// as many points as it contains. The `fps` field is reserved for future use.
 #[derive(Clone, Debug)]
 pub struct Frame {
-    /// The points in this frame.
     pub points: Vec<LaserPoint>,
-    /// Conceptual frame rate for authoring sources (frames per second).
+    /// Reserved for future frame-rate-aware switching; currently unused.
     pub fps: f32,
 }
 
 impl Frame {
-    /// Creates a new frame with the given points and frame rate.
     pub fn new(points: Vec<LaserPoint>, fps: f32) -> Self {
         Self { points, fps }
     }
 
-    /// Creates a blank frame (no points) at the given frame rate.
     pub fn blank(fps: f32) -> Self {
         Self {
             points: Vec::new(),
@@ -34,36 +34,32 @@ impl Frame {
 
 /// Trait for sources that produce frames on demand.
 ///
-/// Implement this trait for pull-based frame generation where the adapter
-/// requests frames as needed.
+/// The adapter uses "loop-complete" semantics: a new frame is requested only
+/// after all points in the current frame have been output.
 pub trait FrameSource: Send {
     /// Produces the next frame for the given stream time and PPS.
-    ///
-    /// The `t` parameter indicates the stream time (in points since start),
-    /// and `pps` is the current points-per-second rate.
     fn next_frame(&mut self, t: StreamInstant, pps: u32) -> Frame;
 }
 
 /// Converts frames to chunks matching each `ChunkRequest`.
 ///
-/// The adapter supports two modes:
+/// Supports two modes:
+/// - **Latest frame mode**: Push frames via `update_frame()`, pull chunks via `next_chunk()`.
+/// - **Pull-based mode**: Adapter pulls frames from a `FrameSource`.
 ///
-/// - **Latest frame mode**: You push frames in (from your UI/render loop),
-///   and the stream pulls chunks out. Use `FrameAdapter::latest()` and
-///   `update_frame()`.
+/// # Frame switching behavior
 ///
-/// - **Pull-based mode**: The adapter pulls frames from a `FrameSource`.
-///   Use `FrameAdapter::from_source()`.
+/// Both modes use wrap-driven switching:
+/// - The current frame loops continuously, outputting points in chunks
+/// - When the index wraps back to 0, the adapter marks itself ready to switch
+/// - On the *next* `next_chunk()` call, the switch occurs (never mid-chunk)
 ///
-/// # Example (latest frame mode)
+/// # Example
 ///
 /// ```ignore
 /// let mut adapter = FrameAdapter::latest(30.0);
-///
-/// // In your render loop, push new frames:
 /// adapter.update_frame(Frame::new(points, 30.0));
 ///
-/// // In the stream loop, pull chunks:
 /// let req = stream.next_request()?;
 /// let points = adapter.next_chunk(&req);
 /// stream.write(&req, &points)?;
@@ -73,51 +69,44 @@ pub struct FrameAdapter {
 }
 
 enum FrameAdapterInner {
-    /// Latest-frame mode: uses the most recently provided frame.
     Latest(LatestFrameAdapter),
-    /// Pull-based mode: pulls frames from a source.
     Source(SourceFrameAdapter),
 }
 
 struct LatestFrameAdapter {
-    /// The current frame being output.
     current_frame: Frame,
-    /// Pending frame to switch to at next chunk boundary.
     pending_frame: Option<Frame>,
-    /// Cursor position within the current frame (0.0 to 1.0).
-    cursor: f64,
-    /// Target FPS for timing calculations (reserved for future frame-rate-aware switching).
+    point_index: usize,
+    /// Set when index wraps; triggers frame swap on next chunk.
+    swap_pending: bool,
+    /// For "hold last" blanking when frame is empty.
+    last_position: (f32, f32),
     #[allow(dead_code)]
     fps: f32,
 }
 
 struct SourceFrameAdapter {
-    /// The frame source.
     source: Box<dyn FrameSource>,
-    /// The current frame being output.
     current_frame: Option<Frame>,
-    /// Cursor position within the current frame (0.0 to 1.0).
-    cursor: f64,
-    /// Last stream instant we fetched a frame for.
-    last_frame_time: Option<StreamInstant>,
+    point_index: usize,
+    /// Set on wrap or initially; triggers fetch on next chunk.
+    need_new_frame: bool,
+    last_position: (f32, f32),
 }
 
 impl FrameAdapter {
     /// Creates a new adapter in "latest frame" mode.
     ///
-    /// In this mode, you push frames via `update_frame()` and the adapter
-    /// uses the most recently provided frame until a new one arrives.
-    ///
-    /// # Arguments
-    ///
-    /// * `fps` - The target frame rate. This is used to determine when to
-    ///   switch to a new frame (at frame boundaries).
+    /// Push frames via `update_frame()`. The adapter uses the most recent frame,
+    /// switching only after completing a full scan of the current frame.
     pub fn latest(fps: f32) -> Self {
         Self {
             inner: FrameAdapterInner::Latest(LatestFrameAdapter {
                 current_frame: Frame::blank(fps),
                 pending_frame: None,
-                cursor: 0.0,
+                point_index: 0,
+                swap_pending: true, // Apply first frame immediately
+                last_position: (0.0, 0.0),
                 fps,
             }),
         }
@@ -125,21 +114,23 @@ impl FrameAdapter {
 
     /// Creates a new adapter in pull-based mode.
     ///
-    /// The adapter will call `source.next_frame()` to get frames as needed.
+    /// The adapter calls `source.next_frame()` after completing each frame.
     pub fn from_source(source: Box<dyn FrameSource>) -> Self {
         Self {
             inner: FrameAdapterInner::Source(SourceFrameAdapter {
                 source,
                 current_frame: None,
-                cursor: 0.0,
-                last_frame_time: None,
+                point_index: 0,
+                need_new_frame: true,
+                last_position: (0.0, 0.0),
             }),
         }
     }
 
-    /// Updates the current frame (latest-frame mode only).
+    /// Updates the frame (latest-frame mode only).
     ///
-    /// The new frame will be used starting at the next chunk boundary.
+    /// The new frame becomes current after the current frame completes a full loop.
+    /// Multiple updates before a wrap keep only the most recent frame.
     ///
     /// # Panics
     ///
@@ -155,11 +146,9 @@ impl FrameAdapter {
         }
     }
 
-    /// Produces exactly `req.n_points` points for the given chunk request.
+    /// Produces exactly `req.n_points` points.
     ///
-    /// This method maintains a cursor through the current frame and cycles
-    /// when reaching the end. When a new frame arrives (via `update_frame()`
-    /// or from the source), it switches at the next chunk boundary.
+    /// Cycles through the current frame, switching frames only at wrap boundaries.
     pub fn next_chunk(&mut self, req: &ChunkRequest) -> Vec<LaserPoint> {
         match &mut self.inner {
             FrameAdapterInner::Latest(adapter) => adapter.next_chunk(req),
@@ -168,9 +157,6 @@ impl FrameAdapter {
     }
 
     /// Returns a thread-safe handle for updating frames from another thread.
-    ///
-    /// This is useful when you want to update frames from a render thread
-    /// while the stream runs on another thread.
     ///
     /// # Panics
     ///
@@ -189,36 +175,36 @@ impl FrameAdapter {
 
 impl LatestFrameAdapter {
     fn next_chunk(&mut self, req: &ChunkRequest) -> Vec<LaserPoint> {
-        // Check if we should switch to pending frame at chunk boundary
-        if let Some(pending) = self.pending_frame.take() {
-            self.current_frame = pending;
-            self.cursor = 0.0;
+        if self.swap_pending {
+            if let Some(pending) = self.pending_frame.take() {
+                self.current_frame = pending;
+                self.point_index = 0;
+            }
+            self.swap_pending = false;
         }
-
         self.generate_points(req.n_points)
     }
 
     fn generate_points(&mut self, n_points: usize) -> Vec<LaserPoint> {
         let frame_points = &self.current_frame.points;
 
-        // Handle empty frame - return blanked points
         if frame_points.is_empty() {
-            return vec![LaserPoint::blanked(0.0, 0.0); n_points];
+            let (x, y) = self.last_position;
+            return vec![LaserPoint::blanked(x, y); n_points];
         }
 
         let mut output = Vec::with_capacity(n_points);
-        let frame_len = frame_points.len() as f64;
+        let frame_len = frame_points.len();
 
         for _ in 0..n_points {
-            // Get the point at the current cursor position
-            let index = (self.cursor * frame_len) as usize;
-            let index = index.min(frame_points.len() - 1);
-            output.push(frame_points[index]);
+            let point = frame_points[self.point_index];
+            output.push(point);
+            self.last_position = (point.x, point.y);
 
-            // Advance cursor and wrap around
-            self.cursor += 1.0 / frame_len;
-            if self.cursor >= 1.0 {
-                self.cursor -= 1.0;
+            self.point_index += 1;
+            if self.point_index >= frame_len {
+                self.point_index = 0;
+                self.swap_pending = true;
             }
         }
 
@@ -228,57 +214,41 @@ impl LatestFrameAdapter {
 
 impl SourceFrameAdapter {
     fn next_chunk(&mut self, req: &ChunkRequest) -> Vec<LaserPoint> {
-        // Determine if we need a new frame based on time
-        let need_new_frame = match self.last_frame_time {
-            None => true,
-            Some(last_time) => {
-                // Get a new frame if we've advanced past it
-                // For simplicity, get a new frame each chunk (can be optimized later)
-                let frame_duration = self
-                    .current_frame
-                    .as_ref()
-                    .map(|f| (req.pps as f32 / f.fps) as u64)
-                    .unwrap_or(0);
-
-                req.start.0 >= last_time.0 + frame_duration
-            }
-        };
-
-        if need_new_frame {
+        if self.need_new_frame {
             let frame = self.source.next_frame(req.start, req.pps);
             self.current_frame = Some(frame);
-            self.last_frame_time = Some(req.start);
-            self.cursor = 0.0;
+            self.point_index = 0;
+            self.need_new_frame = false;
         }
-
         self.generate_points(req.n_points)
     }
 
     fn generate_points(&mut self, n_points: usize) -> Vec<LaserPoint> {
         let Some(ref frame) = self.current_frame else {
-            return vec![LaserPoint::blanked(0.0, 0.0); n_points];
+            let (x, y) = self.last_position;
+            return vec![LaserPoint::blanked(x, y); n_points];
         };
 
         let frame_points = &frame.points;
 
-        // Handle empty frame - return blanked points
         if frame_points.is_empty() {
-            return vec![LaserPoint::blanked(0.0, 0.0); n_points];
+            let (x, y) = self.last_position;
+            self.need_new_frame = true;
+            return vec![LaserPoint::blanked(x, y); n_points];
         }
 
         let mut output = Vec::with_capacity(n_points);
-        let frame_len = frame_points.len() as f64;
+        let frame_len = frame_points.len();
 
         for _ in 0..n_points {
-            // Get the point at the current cursor position
-            let index = (self.cursor * frame_len) as usize;
-            let index = index.min(frame_points.len() - 1);
-            output.push(frame_points[index]);
+            let point = frame_points[self.point_index];
+            output.push(point);
+            self.last_position = (point.x, point.y);
 
-            // Advance cursor and wrap around
-            self.cursor += 1.0 / frame_len;
-            if self.cursor >= 1.0 {
-                self.cursor -= 1.0;
+            self.point_index += 1;
+            if self.point_index >= frame_len {
+                self.point_index = 0;
+                self.need_new_frame = true;
             }
         }
 
@@ -287,23 +257,19 @@ impl SourceFrameAdapter {
 }
 
 /// Thread-safe handle for updating frames from another thread.
-///
-/// Use `FrameAdapter::shared()` to create this from a latest-frame adapter.
 #[derive(Clone)]
 pub struct SharedFrameAdapter {
     inner: Arc<Mutex<LatestFrameAdapter>>,
 }
 
 impl SharedFrameAdapter {
-    /// Updates the current frame.
-    ///
-    /// The new frame will be used starting at the next chunk boundary.
+    /// Updates the frame. Takes effect after the current frame completes.
     pub fn update_frame(&self, frame: Frame) {
         let mut adapter = self.inner.lock().unwrap();
         adapter.pending_frame = Some(frame);
     }
 
-    /// Produces exactly `req.n_points` points for the given chunk request.
+    /// Produces exactly `req.n_points` points.
     pub fn next_chunk(&self, req: &ChunkRequest) -> Vec<LaserPoint> {
         let mut adapter = self.inner.lock().unwrap();
         adapter.next_chunk(req)
@@ -327,15 +293,12 @@ mod tests {
 
         let points = adapter.next_chunk(&req);
         assert_eq!(points.len(), 100);
-        // All points should be blanked
         assert!(points.iter().all(|p| p.intensity == 0));
     }
 
     #[test]
     fn test_latest_frame_cycles() {
         let mut adapter = FrameAdapter::latest(30.0);
-
-        // Create a simple frame with 10 points
         let frame_points: Vec<LaserPoint> = (0..10)
             .map(|i| LaserPoint::new(i as f32 / 10.0, 0.0, 65535, 0, 0, 65535))
             .collect();
@@ -354,15 +317,12 @@ mod tests {
     }
 
     #[test]
-    fn test_frame_switch_at_boundary() {
+    fn test_single_point_frame_swaps_quickly() {
         let mut adapter = FrameAdapter::latest(30.0);
-
-        // First frame
-        let frame1 = Frame::new(
+        adapter.update_frame(Frame::new(
             vec![LaserPoint::new(0.0, 0.0, 65535, 0, 0, 65535)],
             30.0,
-        );
-        adapter.update_frame(frame1);
+        ));
 
         let req = ChunkRequest {
             start: StreamInstant(0),
@@ -375,15 +335,137 @@ mod tests {
         let points1 = adapter.next_chunk(&req);
         assert_eq!(points1[0].x, 0.0);
 
-        // Update with new frame
-        let frame2 = Frame::new(
+        adapter.update_frame(Frame::new(
             vec![LaserPoint::new(1.0, 1.0, 0, 65535, 0, 65535)],
             30.0,
-        );
-        adapter.update_frame(frame2);
+        ));
 
-        // Next chunk should use new frame
+        // Single-point frame wraps every point, so swap happens on next chunk
         let points2 = adapter.next_chunk(&req);
         assert_eq!(points2[0].x, 1.0);
+    }
+
+    #[test]
+    fn test_frame_swap_waits_for_wrap() {
+        let mut adapter = FrameAdapter::latest(30.0);
+        let frame1: Vec<LaserPoint> = (0..100)
+            .map(|i| LaserPoint::new(i as f32 / 100.0, 0.0, 65535, 0, 0, 65535))
+            .collect();
+        adapter.update_frame(Frame::new(frame1, 30.0));
+
+        let req = ChunkRequest {
+            start: StreamInstant(0),
+            pps: 30000,
+            n_points: 10,
+            scheduled_ahead_points: 0,
+            device_queued_points: None,
+        };
+
+        let points1 = adapter.next_chunk(&req);
+        assert_eq!(points1[0].x, 0.0);
+
+        // Update mid-cycle with different frame
+        let frame2: Vec<LaserPoint> = (0..100)
+            .map(|_| LaserPoint::new(9.0, 9.0, 0, 65535, 0, 65535))
+            .collect();
+        adapter.update_frame(Frame::new(frame2, 30.0));
+
+        // Should still use frame1 (not wrapped yet)
+        let points2 = adapter.next_chunk(&req);
+        assert!((points2[0].x - 0.1).abs() < 1e-4, "Expected ~0.1, got {}", points2[0].x);
+
+        // Output remaining 80 points to complete frame1
+        for _ in 0..8 {
+            adapter.next_chunk(&req);
+        }
+
+        // Now wrapped, uses frame2
+        let points_after_wrap = adapter.next_chunk(&req);
+        assert_eq!(points_after_wrap[0].x, 9.0);
+    }
+
+    #[test]
+    fn test_empty_frame_holds_last_position() {
+        let mut adapter = FrameAdapter::latest(30.0);
+        adapter.update_frame(Frame::new(
+            vec![LaserPoint::new(0.5, -0.3, 65535, 0, 0, 65535)],
+            30.0,
+        ));
+
+        let req = ChunkRequest {
+            start: StreamInstant(0),
+            pps: 30000,
+            n_points: 5,
+            scheduled_ahead_points: 0,
+            device_queued_points: None,
+        };
+
+        adapter.next_chunk(&req);
+        adapter.update_frame(Frame::blank(30.0));
+
+        let points = adapter.next_chunk(&req);
+        assert!(points.iter().all(|p| p.intensity == 0));
+        assert_eq!(points[0].x, 0.5);
+        assert_eq!(points[0].y, -0.3);
+    }
+
+    #[test]
+    fn test_integer_index_deterministic() {
+        let mut adapter = FrameAdapter::latest(30.0);
+        let frame: Vec<LaserPoint> = (0..7)
+            .map(|i| LaserPoint::new(i as f32, 0.0, 65535, 0, 0, 65535))
+            .collect();
+        adapter.update_frame(Frame::new(frame, 30.0));
+
+        let req = ChunkRequest {
+            start: StreamInstant(0),
+            pps: 30000,
+            n_points: 7,
+            scheduled_ahead_points: 0,
+            device_queued_points: None,
+        };
+
+        // No drift over 1000 cycles
+        for cycle in 0..1000 {
+            let points = adapter.next_chunk(&req);
+            for (i, p) in points.iter().enumerate() {
+                assert_eq!(p.x, i as f32, "Cycle {}: drift detected", cycle);
+            }
+        }
+    }
+
+    #[test]
+    fn test_source_adapter_wrap_driven_fetch() {
+        struct CountingSource {
+            frame_count: usize,
+        }
+
+        impl FrameSource for CountingSource {
+            fn next_frame(&mut self, _t: StreamInstant, _pps: u32) -> Frame {
+                self.frame_count += 1;
+                let x = self.frame_count as f32;
+                Frame::new(
+                    (0..10).map(|_| LaserPoint::new(x, 0.0, 65535, 0, 0, 65535)).collect(),
+                    30.0,
+                )
+            }
+        }
+
+        let mut adapter = FrameAdapter::from_source(Box::new(CountingSource { frame_count: 0 }));
+
+        let req = ChunkRequest {
+            start: StreamInstant(0),
+            pps: 30000,
+            n_points: 5,
+            scheduled_ahead_points: 0,
+            device_queued_points: None,
+        };
+
+        // First chunk: fetches frame 1
+        assert_eq!(adapter.next_chunk(&req)[0].x, 1.0);
+        // Second chunk: still frame 1
+        assert_eq!(adapter.next_chunk(&req)[0].x, 1.0);
+        // Third chunk: wrapped, fetches frame 2
+        assert_eq!(adapter.next_chunk(&req)[0].x, 2.0);
     }
 }
