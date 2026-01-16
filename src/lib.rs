@@ -182,10 +182,11 @@ pub fn list_devices_filtered(enabled_types: &EnabledDacTypes) -> BackendResult<V
 
     let mut devices = Vec::new();
     for device in discovered {
+        let info = device.info();
         let caps = caps_for_dac_type(&device.dac_type());
         devices.push(DeviceInfo {
-            id: device.name().to_string(),
-            name: device.name().to_string(),
+            id: info.stable_id(),
+            name: info.name(),
             kind: device.dac_type(),
             caps,
         });
@@ -196,25 +197,29 @@ pub fn list_devices_filtered(enabled_types: &EnabledDacTypes) -> BackendResult<V
 
 /// Open a device by ID.
 ///
-/// The ID should match one returned by [`list_devices`].
+/// The ID should match the `id` field returned by [`list_devices`].
+/// IDs are namespaced by protocol (e.g., `etherdream:aa:bb:cc:dd:ee:ff`,
+/// `idn:hostname.local`, `helios:serial`).
 pub fn open_device(id: &str) -> BackendResult<Device> {
     let mut discovery = DacDiscovery::new(EnabledDacTypes::all());
     let discovered = discovery.scan();
 
     let device = discovered
         .into_iter()
-        .find(|d| d.name() == id)
+        .find(|d| d.info().stable_id() == id)
         .ok_or_else(|| backend::Error::disconnected(format!("device not found: {}", id)))?;
 
+    let info = device.info();
+    let name = info.name();
     let dac_type = device.dac_type();
     let stream_backend = discovery.connect(device)?;
 
-    let info = DeviceInfo {
+    let device_info = DeviceInfo {
         id: id.to_string(),
-        name: id.to_string(),
+        name,
         kind: dac_type,
         caps: stream_backend.caps().clone(),
     };
 
-    Ok(Device::new(info, stream_backend))
+    Ok(Device::new(device_info, stream_backend))
 }

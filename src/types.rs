@@ -451,6 +451,17 @@ pub struct StreamConfig {
     pub target_queue_points: usize,
     /// What to do when the producer can't keep up.
     pub underrun: UnderrunPolicy,
+    /// Whether to automatically open the hardware output gate when arming.
+    ///
+    /// When `false` (default), `arm()` only enables software output. The hardware
+    /// output gate must be opened separately if needed.
+    ///
+    /// When `true`, `arm()` will also attempt to open the hardware output gate
+    /// (best-effort, errors are ignored).
+    ///
+    /// Note: `disarm()` always closes the hardware output gate for safety,
+    /// regardless of this setting.
+    pub open_output_gate_on_arm: bool,
 }
 
 impl Default for StreamConfig {
@@ -460,6 +471,7 @@ impl Default for StreamConfig {
             chunk_points: None,
             target_queue_points: 3000,
             underrun: UnderrunPolicy::default(),
+            open_output_gate_on_arm: false,
         }
     }
 }
@@ -488,6 +500,15 @@ impl StreamConfig {
     /// Set the underrun policy (builder pattern).
     pub fn with_underrun(mut self, policy: UnderrunPolicy) -> Self {
         self.underrun = policy;
+        self
+    }
+
+    /// Enable automatic hardware output gate opening on arm (builder pattern).
+    ///
+    /// When enabled, `arm()` will attempt to open the hardware output gate
+    /// in addition to enabling software output. Default is `false`.
+    pub fn with_open_output_gate_on_arm(mut self, enable: bool) -> Self {
+        self.open_output_gate_on_arm = enable;
         self
     }
 }
@@ -564,6 +585,8 @@ pub enum RunExit {
     Stopped,
     /// The producer returned `None` (graceful completion).
     ProducerEnded,
+    /// The device disconnected or became unreachable.
+    Disconnected,
 }
 
 /// Information about a discovered device before connection.

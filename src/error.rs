@@ -16,6 +16,9 @@ pub enum Error {
     /// The device/library cannot accept more data right now.
     WouldBlock,
 
+    /// The stream was explicitly stopped via `StreamControl::stop()`.
+    Stopped,
+
     /// The device disconnected or became unreachable.
     Disconnected(String),
 
@@ -30,6 +33,7 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::WouldBlock => write!(f, "would block: device cannot accept more data"),
+            Error::Stopped => write!(f, "stopped: stream was explicitly stopped"),
             Error::Disconnected(msg) => write!(f, "disconnected: {}", msg),
             Error::InvalidConfig(msg) => write!(f, "invalid configuration: {}", msg),
             Error::Backend(e) => write!(f, "backend error: {}", e),
@@ -70,6 +74,11 @@ impl Error {
     /// Returns true if this is a Disconnected error.
     pub fn is_disconnected(&self) -> bool {
         matches!(self, Error::Disconnected(_))
+    }
+
+    /// Returns true if this is a Stopped error.
+    pub fn is_stopped(&self) -> bool {
+        matches!(self, Error::Stopped)
     }
 }
 

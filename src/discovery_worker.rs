@@ -3,7 +3,7 @@
 //! The `DacDiscoveryWorker` runs discovery in a background thread and produces
 //! ready-to-use [`Device`] instances as devices are found.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 #[cfg(all(feature = "idn", feature = "testutils"))]
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,6 +20,10 @@ type DeviceFilter = dyn Fn(&DiscoveredDeviceInfo) -> bool + Send + Sync + 'stati
 
 /// How often to scan for DAC devices.
 const DEFAULT_DISCOVERY_INTERVAL: Duration = Duration::from_secs(2);
+
+/// How long before a device that hasn't been seen is considered gone and can be rediscovered.
+/// This should be longer than the discovery interval to avoid spurious rediscoveries.
+const DEVICE_TTL: Duration = Duration::from_secs(10);
 
 fn allow_all_devices(_: &DiscoveredDeviceInfo) -> bool {
     true
@@ -218,7 +222,9 @@ fn discovery_loop(
     running: Arc<AtomicBool>,
     mut custom_sources: Vec<Box<dyn CustomDiscoverySource>>,
 ) {
-    let mut reported_devices: HashSet<String> = HashSet::new();
+    // Track devices by their stable ID and when they were last seen.
+    // Devices that haven't been seen for DEVICE_TTL are removed, allowing rediscovery.
+    let mut reported_devices: HashMap<String, Instant> = HashMap::new();
     let mut last_discovery = Instant::now() - discovery_interval;
 
     // Set initial enabled types
@@ -230,23 +236,28 @@ fn discovery_loop(
         if elapsed < discovery_interval {
             thread::sleep(discovery_interval - elapsed);
         }
-        last_discovery = Instant::now();
+        let now = Instant::now();
+        last_discovery = now;
+
+        // Prune devices that haven't been seen for DEVICE_TTL
+        reported_devices.retain(|_, last_seen| now.duration_since(*last_seen) < DEVICE_TTL);
 
         // Scan for built-in devices
         let devices = discovery.scan();
         for device in devices {
             let info = device.info();
-            let name = info.name();
+            let stable_id = info.stable_id();
 
-            // Skip already-reported devices
-            if reported_devices.contains(&name) {
+            // Update last-seen time for known devices, skip if already reported
+            if let Some(last_seen) = reported_devices.get_mut(&stable_id) {
+                *last_seen = now;
                 continue;
             }
 
             if device_info_tx.send(info.clone()).is_err() {
                 return;
             }
-            reported_devices.insert(name.clone());
+            reported_devices.insert(stable_id.clone(), now);
 
             // Only connect if filter passes
             if !device_filter(&info) {
@@ -256,14 +267,14 @@ fn discovery_loop(
             let backend = match discovery.connect(device) {
                 Ok(b) => b,
                 Err(_) => {
-                    reported_devices.remove(&name);
+                    reported_devices.remove(&stable_id);
                     continue;
                 }
             };
 
             let device_info = DeviceInfo {
-                id: name.clone(),
-                name: name.clone(),
+                id: stable_id.clone(),
+                name: info.name(),
                 kind: info.dac_type,
                 caps: backend.caps().clone(),
             };
@@ -277,10 +288,11 @@ fn discovery_loop(
         for source in &mut custom_sources {
             let custom_devs = source.poll_devices();
             for dac in custom_devs {
-                let id = dac.id.clone();
+                let stable_id = dac.id.clone();
 
-                // Skip already-reported devices
-                if reported_devices.contains(&id) {
+                // Update last-seen time for known devices, skip if already reported
+                if let Some(last_seen) = reported_devices.get_mut(&stable_id) {
+                    *last_seen = now;
                     continue;
                 }
 
@@ -289,7 +301,7 @@ fn discovery_loop(
                 if device_info_tx.send(info.clone()).is_err() {
                     return;
                 }
-                reported_devices.insert(id.clone());
+                reported_devices.insert(stable_id.clone(), now);
 
                 // Only connect if filter passes
                 if !device_filter(&info) {
@@ -297,13 +309,13 @@ fn discovery_loop(
                 }
 
                 let Some(backend) = source.create_backend(&dac) else {
-                    reported_devices.remove(&id);
+                    reported_devices.remove(&stable_id);
                     continue;
                 };
 
                 let device_info = DeviceInfo {
-                    id: id.clone(),
-                    name: id.clone(),
+                    id: stable_id.clone(),
+                    name: dac.name.clone(),
                     kind: info.dac_type.clone(),
                     caps: backend.caps().clone(),
                 };

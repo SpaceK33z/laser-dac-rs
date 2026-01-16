@@ -86,6 +86,10 @@ struct StreamState {
     last_chunk: Option<Vec<LaserPoint>>,
     /// Statistics.
     stats: StreamStats,
+    /// Track the last armed state to detect transitions.
+    last_armed: bool,
+    /// Whether the hardware output gate is currently open.
+    output_gate_open: bool,
 }
 
 impl StreamState {
@@ -95,6 +99,8 @@ impl StreamState {
             scheduled_ahead: 0,
             last_chunk: None,
             stats: StreamStats::default(),
+            last_armed: false,
+            output_gate_open: false,
         }
     }
 }
@@ -190,7 +196,7 @@ impl Stream {
     pub fn next_request(&mut self) -> Result<ChunkRequest> {
         // Check for stop request
         if self.control.is_stop_requested() {
-            return Err(Error::disconnected("stop requested"));
+            return Err(Error::Stopped);
         }
 
         // Check for backend
@@ -223,6 +229,13 @@ impl Stream {
     ///
     /// - `points.len()` must equal `req.n_points`.
     /// - The request must be the most recent one from `next_request()`.
+    ///
+    /// # Output Gate Control
+    ///
+    /// This method manages the hardware output gate based on arm state transitions:
+    /// - When transitioning from armed to disarmed, the output gate is closed (best-effort).
+    /// - When transitioning from disarmed to armed, the output gate is opened only if
+    ///   `StreamConfig::open_output_gate_on_arm` is `true`.
     pub fn write(&mut self, req: &ChunkRequest, points: &[LaserPoint]) -> Result<()> {
         // Validate point count
         if points.len() != req.n_points {
@@ -235,29 +248,38 @@ impl Stream {
 
         // Check for stop request
         if self.control.is_stop_requested() {
-            return Err(Error::disconnected("stop requested"));
+            return Err(Error::Stopped);
         }
 
-        // Apply arm/disarm: if disarmed, blank all points
-        let output_points: Vec<LaserPoint> = if self.control.is_armed() {
-            points.to_vec()
-        } else {
-            points
-                .iter()
-                .map(|p| LaserPoint::blanked(p.x, p.y))
-                .collect()
-        };
+        let is_armed = self.control.is_armed();
 
-        // Write to backend
+        // Handle output gate transitions
+        self.handle_output_gate_transition(is_armed);
+
+        // Write to backend (optimized: no allocation when armed)
         let backend = self
             .backend
             .as_mut()
             .ok_or_else(|| Error::disconnected("no backend"))?;
 
-        match backend.try_write_chunk(self.config.pps, &output_points)? {
+        let outcome = if is_armed {
+            // Armed: pass points directly to backend (zero-copy)
+            backend.try_write_chunk(self.config.pps, points)?
+        } else {
+            // Disarmed: blank all points (allocate only when needed)
+            let blanked: Vec<LaserPoint> = points
+                .iter()
+                .map(|p| LaserPoint::blanked(p.x, p.y))
+                .collect();
+            backend.try_write_chunk(self.config.pps, &blanked)?
+        };
+
+        match outcome {
             WriteOutcome::Written => {
                 // Update state
-                self.state.last_chunk = Some(output_points);
+                if is_armed {
+                    self.state.last_chunk = Some(points.to_vec());
+                }
                 self.state.current_instant += self.chunk_points as u64;
                 self.state.scheduled_ahead += self.chunk_points as u64;
                 self.state.stats.chunks_written += 1;
@@ -265,6 +287,30 @@ impl Stream {
                 Ok(())
             }
             WriteOutcome::WouldBlock => Err(Error::WouldBlock),
+        }
+    }
+
+    /// Handle hardware output gate transitions based on arm state changes.
+    fn handle_output_gate_transition(&mut self, is_armed: bool) {
+        let was_armed = self.state.last_armed;
+        self.state.last_armed = is_armed;
+
+        if was_armed && !is_armed {
+            // Disarmed: close the output gate for safety (best-effort)
+            if self.state.output_gate_open {
+                if let Some(backend) = &mut self.backend {
+                    let _ = backend.set_shutter(false); // Best-effort, ignore errors
+                }
+                self.state.output_gate_open = false;
+            }
+        } else if !was_armed && is_armed && self.config.open_output_gate_on_arm {
+            // Armed with auto-open enabled: open the output gate (best-effort)
+            if !self.state.output_gate_open {
+                if let Some(backend) = &mut self.backend {
+                    let _ = backend.set_shutter(true); // Best-effort, ignore errors
+                }
+                self.state.output_gate_open = true;
+            }
         }
     }
 
@@ -279,10 +325,102 @@ impl Stream {
         Ok(())
     }
 
+    /// Manually open the hardware output gate.
+    ///
+    /// This provides explicit control over the hardware output gate (shutter/interlock).
+    /// Returns `Ok(())` on success, or an error if the backend doesn't support it
+    /// or the operation fails.
+    ///
+    /// Note: The output gate is automatically managed based on arm state transitions
+    /// (see `StreamConfig::open_output_gate_on_arm`). Use this method only if you
+    /// need manual control beyond the automatic behavior.
+    pub fn open_output_gate(&mut self) -> Result<()> {
+        let backend = self
+            .backend
+            .as_mut()
+            .ok_or_else(|| Error::disconnected("no backend"))?;
+        backend.set_shutter(true)?;
+        self.state.output_gate_open = true;
+        Ok(())
+    }
+
+    /// Manually close the hardware output gate.
+    ///
+    /// This provides explicit control over the hardware output gate (shutter/interlock).
+    /// Returns `Ok(())` on success, or an error if the backend doesn't support it
+    /// or the operation fails.
+    ///
+    /// Note: The output gate is automatically closed on `disarm()` for safety.
+    /// Use this method only if you need manual control.
+    pub fn close_output_gate(&mut self) -> Result<()> {
+        let backend = self
+            .backend
+            .as_mut()
+            .ok_or_else(|| Error::disconnected("no backend"))?;
+        backend.set_shutter(false)?;
+        self.state.output_gate_open = false;
+        Ok(())
+    }
+
+    /// Returns whether the hardware output gate is currently open.
+    pub fn is_output_gate_open(&self) -> bool {
+        self.state.output_gate_open
+    }
+
+    /// Consume the stream and recover the device for reuse.
+    ///
+    /// This method stops the stream, closes the output gate, and returns the
+    /// underlying `Device` along with the final `StreamStats`. The device can
+    /// then be used to start a new stream with different configuration.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let (stream, info) = device.start_stream(config)?;
+    /// // ... stream for a while ...
+    /// let (device, stats) = stream.into_device();
+    /// println!("Streamed {} points", stats.points_written);
+    ///
+    /// // Restart with different config
+    /// let new_config = StreamConfig::new(60_000);
+    /// let (stream2, _) = device.start_stream(new_config)?;
+    /// ```
+    pub fn into_device(mut self) -> (Device, StreamStats) {
+        // Stop the stream and close output gate
+        let _ = self.control.stop();
+        if let Some(backend) = &mut self.backend {
+            let _ = backend.set_shutter(false);
+            let _ = backend.stop();
+        }
+
+        // Take the backend (leaves None, so Drop won't try to stop again)
+        let backend = self.backend.take();
+        let stats = self.state.stats.clone();
+
+        let device = Device {
+            info: self.info.clone(),
+            backend,
+        };
+
+        (device, stats)
+    }
+
     /// Run the stream in callback mode.
     ///
     /// The producer is called whenever the stream needs a new chunk.
     /// Return `Some(points)` to continue, or `None` to end the stream.
+    ///
+    /// # Error Classification
+    ///
+    /// The `on_error` callback receives recoverable errors that don't terminate the stream.
+    /// Terminal conditions result in returning from `run()`:
+    ///
+    /// - **`RunExit::Stopped`**: Stream was stopped via `StreamControl::stop()` or underrun policy.
+    /// - **`RunExit::ProducerEnded`**: Producer returned `None`.
+    /// - **`RunExit::Disconnected`**: Device disconnected or became unreachable.
+    ///
+    /// Recoverable errors (reported via `on_error`, stream continues):
+    /// - Transient backend errors that don't indicate disconnection.
     pub fn run<F, E>(mut self, mut producer: F, mut on_error: E) -> Result<RunExit>
     where
         F: FnMut(ChunkRequest) -> Option<Vec<LaserPoint>> + Send + 'static,
@@ -297,10 +435,15 @@ impl Stream {
             // Get next request
             let req = match self.next_request() {
                 Ok(req) => req,
-                Err(e) if e.is_disconnected() && self.control.is_stop_requested() => {
+                Err(e) if e.is_stopped() => {
                     return Ok(RunExit::Stopped);
                 }
+                Err(e) if e.is_disconnected() => {
+                    on_error(e);
+                    return Ok(RunExit::Disconnected);
+                }
                 Err(e) => {
+                    // Recoverable error - report and retry
                     on_error(e);
                     continue;
                 }
@@ -314,17 +457,33 @@ impl Stream {
                         match self.write(&req, &points) {
                             Ok(()) => break,
                             Err(e) if e.is_would_block() => {
-                                // Backend buffer full - wait briefly and retry
-                                std::thread::sleep(Duration::from_millis(1));
+                                // Backend buffer full - yield first for low-latency scenarios,
+                                // then sleep briefly if still blocked
+                                std::thread::yield_now();
+                                if self.control.is_stop_requested() {
+                                    return Ok(RunExit::Stopped);
+                                }
+                                std::thread::sleep(Duration::from_micros(100));
                                 if self.control.is_stop_requested() {
                                     return Ok(RunExit::Stopped);
                                 }
                                 continue;
                             }
+                            Err(e) if e.is_stopped() => {
+                                return Ok(RunExit::Stopped);
+                            }
+                            Err(e) if e.is_disconnected() => {
+                                on_error(e);
+                                return Ok(RunExit::Disconnected);
+                            }
                             Err(e) => {
-                                // Real error - report and handle underrun
+                                // Recoverable error - report and handle underrun
                                 on_error(e);
                                 if let Err(e2) = self.handle_underrun(&req) {
+                                    // Underrun handling can also hit terminal conditions
+                                    if e2.is_stopped() {
+                                        return Ok(RunExit::Stopped);
+                                    }
                                     on_error(e2);
                                 }
                                 break;
@@ -347,11 +506,24 @@ impl Stream {
     fn wait_for_ready(&mut self) -> Result<()> {
         let target = self.config.target_queue_points as u64;
 
-        if self.state.scheduled_ahead < target {
+        // Use the more accurate queue depth when available from the device.
+        // This handles cases where the device reports actual buffer state,
+        // which may differ from our software-tracked scheduled_ahead.
+        let effective_queue = if self.info.caps.can_estimate_queue {
+            self.backend
+                .as_ref()
+                .and_then(|b| b.queued_points())
+                .map(|device_q| device_q.max(self.state.scheduled_ahead))
+                .unwrap_or(self.state.scheduled_ahead)
+        } else {
+            self.state.scheduled_ahead
+        };
+
+        if effective_queue < target {
             return Ok(());
         }
 
-        let points_to_drain = self.state.scheduled_ahead.saturating_sub(target / 2);
+        let points_to_drain = effective_queue.saturating_sub(target / 2);
         let seconds_to_wait = points_to_drain as f64 / self.config.pps as f64;
         let wait_duration = Duration::from_secs_f64(seconds_to_wait.min(0.1));
 
@@ -383,7 +555,7 @@ impl Stream {
             }
             UnderrunPolicy::Stop => {
                 self.control.stop()?;
-                return Err(Error::disconnected("underrun with Stop policy"));
+                return Err(Error::Stopped);
             }
         };
 
@@ -489,7 +661,28 @@ impl Device {
 
     /// Starts a streaming session, consuming the device.
     ///
-    /// Returns both the stream and the device info, so metadata remains accessible.
+    /// # Ownership
+    ///
+    /// This method consumes the `Device` because:
+    /// - Each device can only have one active stream at a time.
+    /// - The backend is moved into the `Stream` to ensure exclusive access.
+    /// - This prevents accidental reuse of a device that's already streaming.
+    ///
+    /// The method returns both the `Stream` and a copy of `DeviceInfo`, so you
+    /// retain access to device metadata (id, name, capabilities) after starting.
+    ///
+    /// # Connection
+    ///
+    /// If the device is not already connected, this method will establish the
+    /// connection before creating the stream. Connection failures are returned
+    /// as errors.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The device backend has already been used for a stream.
+    /// - The configuration is invalid (PPS out of range, invalid chunk size, etc.).
+    /// - The backend fails to connect.
     pub fn start_stream(mut self, cfg: StreamConfig) -> Result<(Stream, DeviceInfo)> {
         let mut backend = self.backend.take().ok_or_else(|| {
             Error::invalid_config("device backend has already been used for a stream")
@@ -502,9 +695,9 @@ impl Device {
             backend.connect()?;
         }
 
-        let chunk_points = cfg
-            .chunk_points
-            .unwrap_or_else(|| Self::compute_default_chunk_size(&self.info.caps, cfg.pps));
+        let chunk_points = cfg.chunk_points.unwrap_or_else(|| {
+            Self::compute_default_chunk_size(&self.info.caps, cfg.pps, cfg.target_queue_points)
+        });
 
         let stream = Stream::with_backend(self.info.clone(), backend, cfg, chunk_points);
 
@@ -538,12 +731,19 @@ impl Device {
         Ok(())
     }
 
-    fn compute_default_chunk_size(caps: &Caps, pps: u32) -> usize {
+    fn compute_default_chunk_size(caps: &Caps, pps: u32, target_queue_points: usize) -> usize {
+        // Target ~10ms worth of points per chunk
         let target_chunk_ms = 10;
-        let target_points = (pps as usize * target_chunk_ms) / 1000;
-        let max_points = caps.max_points_per_chunk;
+        let time_based_points = (pps as usize * target_chunk_ms) / 1000;
+
+        // Also bound by target queue: aim for ~¼ of target queue per chunk.
+        // This ensures we don't send huge chunks relative to our latency target.
+        let queue_based_max = target_queue_points / 4;
+
+        let max_points = caps.max_points_per_chunk.min(queue_based_max.max(100));
         let min_points = 100;
-        target_points.clamp(min_points, max_points)
+
+        time_based_points.clamp(min_points, max_points)
     }
 }
 
@@ -553,6 +753,95 @@ pub type OwnedDevice = Device;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::{StreamBackend, WriteOutcome};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    /// A test backend for unit testing stream behavior.
+    struct TestBackend {
+        caps: Caps,
+        connected: bool,
+        /// Count of write attempts
+        write_count: Arc<AtomicUsize>,
+        /// Number of WouldBlock responses to return before accepting writes
+        would_block_count: Arc<AtomicUsize>,
+        /// Simulated queue depth
+        queued: Arc<AtomicU64>,
+    }
+
+    impl TestBackend {
+        fn new() -> Self {
+            Self {
+                caps: Caps {
+                    pps_min: 1000,
+                    pps_max: 100000,
+                    max_points_per_chunk: 1000,
+                    prefers_constant_pps: false,
+                    can_estimate_queue: true,
+                    output_model: crate::types::OutputModel::NetworkFifo,
+                },
+                connected: false,
+                write_count: Arc::new(AtomicUsize::new(0)),
+                would_block_count: Arc::new(AtomicUsize::new(0)),
+                queued: Arc::new(AtomicU64::new(0)),
+            }
+        }
+
+        fn with_would_block_count(mut self, count: usize) -> Self {
+            self.would_block_count = Arc::new(AtomicUsize::new(count));
+            self
+        }
+    }
+
+    impl StreamBackend for TestBackend {
+        fn dac_type(&self) -> DacType {
+            DacType::Custom("Test".to_string())
+        }
+
+        fn caps(&self) -> &Caps {
+            &self.caps
+        }
+
+        fn connect(&mut self) -> Result<()> {
+            self.connected = true;
+            Ok(())
+        }
+
+        fn disconnect(&mut self) -> Result<()> {
+            self.connected = false;
+            Ok(())
+        }
+
+        fn is_connected(&self) -> bool {
+            self.connected
+        }
+
+        fn try_write_chunk(&mut self, _pps: u32, points: &[LaserPoint]) -> Result<WriteOutcome> {
+            self.write_count.fetch_add(1, Ordering::SeqCst);
+
+            // Return WouldBlock until count reaches 0
+            let remaining = self.would_block_count.load(Ordering::SeqCst);
+            if remaining > 0 {
+                self.would_block_count.fetch_sub(1, Ordering::SeqCst);
+                return Ok(WriteOutcome::WouldBlock);
+            }
+
+            self.queued.fetch_add(points.len() as u64, Ordering::SeqCst);
+            Ok(WriteOutcome::Written)
+        }
+
+        fn stop(&mut self) -> Result<()> {
+            Ok(())
+        }
+
+        fn set_shutter(&mut self, _open: bool) -> Result<()> {
+            Ok(())
+        }
+
+        fn queued_points(&self) -> Option<u64> {
+            Some(self.queued.load(Ordering::SeqCst))
+        }
+    }
 
     #[test]
     fn test_stream_control_arm_disarm() {
@@ -585,5 +874,104 @@ mod tests {
 
         control2.stop().unwrap();
         assert!(control1.is_stop_requested());
+    }
+
+    #[test]
+    fn test_device_start_stream_connects_backend() {
+        let backend = TestBackend::new();
+        let info = DeviceInfo {
+            id: "test".to_string(),
+            name: "Test Device".to_string(),
+            kind: DacType::Custom("Test".to_string()),
+            caps: backend.caps().clone(),
+        };
+        let device = Device::new(info, Box::new(backend));
+
+        // Device should not be connected initially
+        assert!(!device.is_connected());
+
+        // start_stream should connect and return a usable stream
+        let cfg = StreamConfig::new(30000);
+        let result = device.start_stream(cfg);
+        assert!(result.is_ok());
+
+        let (stream, _info) = result.unwrap();
+        assert!(stream.backend.as_ref().unwrap().is_connected());
+    }
+
+    #[test]
+    fn test_handle_underrun_advances_state() {
+        let mut backend = TestBackend::new();
+        backend.connected = true;
+        let info = DeviceInfo {
+            id: "test".to_string(),
+            name: "Test Device".to_string(),
+            kind: DacType::Custom("Test".to_string()),
+            caps: backend.caps().clone(),
+        };
+
+        let cfg = StreamConfig::new(30000);
+        let mut stream = Stream::with_backend(info, Box::new(backend), cfg, 100);
+
+        // Record initial state
+        let initial_instant = stream.state.current_instant;
+        let initial_scheduled = stream.state.scheduled_ahead;
+        let initial_chunks = stream.state.stats.chunks_written;
+        let initial_points = stream.state.stats.points_written;
+
+        // Trigger underrun handling
+        let req = ChunkRequest {
+            start: StreamInstant::new(0),
+            pps: 30000,
+            n_points: 100,
+            scheduled_ahead_points: 0,
+            device_queued_points: None,
+        };
+        stream.handle_underrun(&req).unwrap();
+
+        // State should have advanced
+        assert!(stream.state.current_instant > initial_instant);
+        assert!(stream.state.scheduled_ahead > initial_scheduled);
+        assert_eq!(stream.state.stats.chunks_written, initial_chunks + 1);
+        assert_eq!(stream.state.stats.points_written, initial_points + 100);
+        assert_eq!(stream.state.stats.underrun_count, 1);
+    }
+
+    #[test]
+    fn test_run_retries_on_would_block() {
+        // Create a backend that returns WouldBlock 3 times before accepting
+        let backend = TestBackend::new().with_would_block_count(3);
+        let write_count = backend.write_count.clone();
+
+        let mut backend_box: Box<dyn StreamBackend> = Box::new(backend);
+        backend_box.connect().unwrap();
+
+        let info = DeviceInfo {
+            id: "test".to_string(),
+            name: "Test Device".to_string(),
+            kind: DacType::Custom("Test".to_string()),
+            caps: backend_box.caps().clone(),
+        };
+
+        let cfg = StreamConfig::new(30000).with_target_queue_points(10000);
+        let stream = Stream::with_backend(info, backend_box, cfg, 100);
+
+        let produced_count = Arc::new(AtomicUsize::new(0));
+        let produced_count_clone = produced_count.clone();
+        let result = stream.run(
+            move |_req| {
+                let count = produced_count_clone.fetch_add(1, Ordering::SeqCst);
+                if count < 1 {
+                    Some(vec![LaserPoint::blanked(0.0, 0.0); 100])
+                } else {
+                    None // End after one chunk
+                }
+            },
+            |_e| {},
+        );
+
+        assert_eq!(result.unwrap(), RunExit::ProducerEnded);
+        // Should have attempted write 4 times (3 WouldBlock + 1 success)
+        assert_eq!(write_count.load(Ordering::SeqCst), 4);
     }
 }
