@@ -14,6 +14,17 @@ pub struct RenderPoint {
     pub intensity: f32,
 }
 
+/// A parsed chunk with timing information.
+#[derive(Clone, Debug)]
+pub struct ParsedChunk {
+    /// Timestamp from the channel message header (u32, microseconds, wraps).
+    pub timestamp_us_u32: u32,
+    /// Duration of this chunk in microseconds (24-bit value from sample chunk header).
+    pub duration_us: u32,
+    /// The parsed points in this chunk.
+    pub points: Vec<RenderPoint>,
+}
+
 /// Content ID flags from protocol
 const IDNFLG_CONTENTID_CONFIG_LSTFRG: u16 = 0x4000;
 
@@ -22,8 +33,8 @@ const XYRGBI_SAMPLE_SIZE: usize = 8;
 
 /// Parse frame data from an RT_CNLMSG packet.
 ///
-/// Returns the parsed points or None if parsing failed.
-pub fn parse_frame_data(data: &[u8]) -> Option<Vec<RenderPoint>> {
+/// Returns the parsed chunk with timing info or None if parsing failed.
+pub fn parse_frame_data(data: &[u8]) -> Option<ParsedChunk> {
     if data.len() < 16 {
         log::warn!("Packet too small: {} bytes", data.len());
         return None;
@@ -35,7 +46,7 @@ pub fn parse_frame_data(data: &[u8]) -> Option<Vec<RenderPoint>> {
         .take(64)
         .map(|b| format!("{:02X} ", b))
         .collect();
-    log::info!("Raw packet ({} bytes): {}", data.len(), hex_dump);
+    log::trace!("Raw packet ({} bytes): {}", data.len(), hex_dump);
 
     let mut cursor = Cursor::new(data);
 
@@ -45,12 +56,13 @@ pub fn parse_frame_data(data: &[u8]) -> Option<Vec<RenderPoint>> {
     // Parse channel message header (8 bytes)
     let total_size = cursor.read_u16::<BE>().ok()?;
     let content_id = cursor.read_u16::<BE>().ok()?;
-    let _timestamp = cursor.read_u32::<BE>().ok()?;
+    let timestamp_us_u32 = cursor.read_u32::<BE>().ok()?;
 
-    log::info!(
-        "Channel msg: total_size={}, content_id=0x{:04X}, has_config={}",
+    log::trace!(
+        "Channel msg: total_size={}, content_id=0x{:04X}, timestamp={}, has_config={}",
         total_size,
         content_id,
+        timestamp_us_u32,
         (content_id & IDNFLG_CONTENTID_CONFIG_LSTFRG) != 0
     );
 
@@ -64,7 +76,7 @@ pub fn parse_frame_data(data: &[u8]) -> Option<Vec<RenderPoint>> {
         let service_id = cursor.read_u8().ok()?;
         let service_mode = cursor.read_u8().ok()?;
 
-        log::info!(
+        log::trace!(
             "Config: word_count={}, flags=0x{:02X}, service_id={}, service_mode={}",
             word_count,
             flags,
@@ -75,22 +87,26 @@ pub fn parse_frame_data(data: &[u8]) -> Option<Vec<RenderPoint>> {
         // Skip descriptor words (word_count represents 32-bit words, i.e., descriptor pairs)
         // Each word is 4 bytes (2 descriptors * 2 bytes each)
         let skip_bytes = word_count as u64 * 4;
-        log::info!(
+        log::trace!(
             "Skipping {} descriptor bytes, cursor before={}",
             skip_bytes,
             cursor.position()
         );
         cursor.set_position(cursor.position() + skip_bytes);
-        log::info!("Cursor after skip={}", cursor.position());
+        log::trace!("Cursor after skip={}", cursor.position());
     } else {
-        log::info!("No config in packet");
+        log::trace!("No config in packet");
     }
 
     // Parse sample chunk header (4 bytes)
+    // The upper 8 bits are flags, the lower 24 bits are duration_us
     let flags_duration = cursor.read_u32::<BE>().ok()?;
-    log::info!(
-        "Sample chunk header: flags_duration=0x{:08X}, cursor now={}",
-        flags_duration,
+    let duration_us = flags_duration & 0x00FF_FFFF;
+    let chunk_flags = (flags_duration >> 24) as u8;
+    log::trace!(
+        "Sample chunk header: flags=0x{:02X}, duration_us={}, cursor now={}",
+        chunk_flags,
+        duration_us,
         cursor.position()
     );
 
@@ -98,7 +114,7 @@ pub fn parse_frame_data(data: &[u8]) -> Option<Vec<RenderPoint>> {
     let remaining = data.len() as u64 - cursor.position();
     let point_count = remaining as usize / XYRGBI_SAMPLE_SIZE;
 
-    log::info!(
+    log::trace!(
         "Parsing {} points from {} remaining bytes (pos={})",
         point_count,
         remaining,
@@ -112,7 +128,7 @@ pub fn parse_frame_data(data: &[u8]) -> Option<Vec<RenderPoint>> {
             .iter()
             .map(|b| format!("{:02X} ", b))
             .collect();
-        log::info!("First 24 bytes of point data: {}", point_hex);
+        log::trace!("First 24 bytes of point data: {}", point_hex);
     }
 
     let mut points = Vec::with_capacity(point_count);
@@ -129,7 +145,7 @@ pub fn parse_frame_data(data: &[u8]) -> Option<Vec<RenderPoint>> {
         if i < 3 {
             let norm_x = -(x as f32) / 32767.0;
             let norm_y = -(y as f32) / 32767.0;
-            log::info!(
+            log::trace!(
                 "Point {}: raw x={}, y={}, r={}, g={}, b={}, i={} -> norm x={:.3}, y={:.3}",
                 i,
                 x,
@@ -155,5 +171,9 @@ pub fn parse_frame_data(data: &[u8]) -> Option<Vec<RenderPoint>> {
         });
     }
 
-    Some(points)
+    Some(ParsedChunk {
+        timestamp_us_u32,
+        duration_us,
+        points,
+    })
 }

@@ -3,101 +3,27 @@
 //! Acts as a virtual IDN laser DAC that can be discovered by the laser-dac crate
 //! and renders received laser points in an egui window.
 
+mod app;
+mod fps_estimator;
+mod persistence_buffer;
 mod protocol_handler;
 mod renderer;
 mod server;
+mod settings;
+mod timing;
 
-use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc;
 use std::sync::{Arc, RwLock};
 use std::thread;
-use std::time::Instant;
 
 use clap::Parser;
 use eframe::egui;
 
+use app::{SimulatorApp, TestApp};
 use protocol_handler::RenderPoint;
-use renderer::RenderSettings;
-use server::{run_server, ServerEvent, SimulatorServerConfig};
-
-/// Shared settings between UI and server.
-#[derive(Clone)]
-pub struct SimulatorSettings {
-    // Visualization
-    pub point_size: f32,
-    pub show_grid: bool,
-    pub show_blanking: bool,
-    pub invert_y: bool,
-
-    // Device status flags (for scan response)
-    pub status_malfunction: bool,
-    pub status_offline: bool,
-    pub status_excluded: bool,
-    pub status_occupied: bool,
-
-    // Connection
-    pub link_timeout_ms: u32,
-    pub simulated_latency_ms: u32,
-    pub force_disconnect: bool,
-
-    // ACK error injection
-    pub ack_error_code: u8,
-}
-
-impl Default for SimulatorSettings {
-    fn default() -> Self {
-        Self {
-            point_size: 2.0,
-            show_grid: true,
-            show_blanking: false,
-            invert_y: false,
-            status_malfunction: false,
-            status_offline: false,
-            status_excluded: false,
-            status_occupied: false,
-            link_timeout_ms: 1000,
-            simulated_latency_ms: 0,
-            force_disconnect: false,
-            ack_error_code: 0x00,
-        }
-    }
-}
-
-/// ACK error code options for the dropdown.
-#[derive(Clone, Copy, PartialEq)]
-pub enum AckErrorOption {
-    Success,
-    EmptyClose,
-    SessionsOccupied,
-    GroupExcluded,
-    InvalidPayload,
-    ProcessingError,
-}
-
-impl AckErrorOption {
-    fn code(&self) -> u8 {
-        match self {
-            AckErrorOption::Success => 0x00,
-            AckErrorOption::EmptyClose => 0xEB,
-            AckErrorOption::SessionsOccupied => 0xEC,
-            AckErrorOption::GroupExcluded => 0xED,
-            AckErrorOption::InvalidPayload => 0xEE,
-            AckErrorOption::ProcessingError => 0xEF,
-        }
-    }
-
-    fn label(&self) -> &'static str {
-        match self {
-            AckErrorOption::Success => "Success (0x00)",
-            AckErrorOption::EmptyClose => "Empty close (0xEB)",
-            AckErrorOption::SessionsOccupied => "Sessions occupied (0xEC)",
-            AckErrorOption::GroupExcluded => "Group excluded (0xED)",
-            AckErrorOption::InvalidPayload => "Invalid payload (0xEE)",
-            AckErrorOption::ProcessingError => "Processing error (0xEF)",
-        }
-    }
-}
+use server::{run_server, SimulatorServerConfig};
+use settings::SimulatorSettings;
 
 #[derive(Parser)]
 #[command(
@@ -198,7 +124,7 @@ fn main() -> eframe::Result<()> {
         return eframe::run_native(
             "IDN Simulator",
             options,
-            Box::new(|_cc| Ok(Box::new(TestApp::new()))),
+            Box::new(|_cc| Ok(Box::new(TestApp::new(generate_test_points())))),
         );
     }
 
@@ -239,251 +165,4 @@ fn main() -> eframe::Result<()> {
     let _ = server_handle.join();
 
     result
-}
-
-/// Test mode app - renders hardcoded test points.
-struct TestApp {
-    test_points: Vec<RenderPoint>,
-}
-
-impl TestApp {
-    fn new() -> Self {
-        Self {
-            test_points: generate_test_points(),
-        }
-    }
-}
-
-impl eframe::App for TestApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        egui::TopBottomPanel::bottom("stats").show(ctx, |ui| {
-            ui.label("TEST MODE - Showing hardcoded test lines");
-        });
-
-        egui::CentralPanel::default()
-            .frame(egui::Frame::none())
-            .show(ctx, |ui| {
-                renderer::render_laser_canvas(ui, &self.test_points, &RenderSettings::default());
-            });
-    }
-}
-
-struct SimulatorApp {
-    event_rx: mpsc::Receiver<ServerEvent>,
-    running: Arc<AtomicBool>,
-    settings: Arc<RwLock<SimulatorSettings>>,
-    current_frame: Vec<RenderPoint>,
-    /// Buffer for accumulating points from multiple packets
-    accumulator: Vec<RenderPoint>,
-    /// Timestamp of last received packet
-    last_packet_time: Option<Instant>,
-    frames_received: u64,
-    client_address: Option<SocketAddr>,
-    /// Local copy of ACK error selection for UI
-    ack_error_selection: AckErrorOption,
-}
-
-/// Time window for accumulating packets into a single frame (ms).
-/// Packets arriving within this window are considered part of the same frame.
-/// This needs to be short enough to handle 60fps (16ms) but long enough
-/// to catch all packets from a multi-packet frame.
-const FRAME_ACCUMULATION_WINDOW_MS: u64 = 8;
-
-impl SimulatorApp {
-    fn new(
-        event_rx: mpsc::Receiver<ServerEvent>,
-        running: Arc<AtomicBool>,
-        settings: Arc<RwLock<SimulatorSettings>>,
-    ) -> Self {
-        Self {
-            event_rx,
-            running,
-            settings,
-            current_frame: Vec::new(),
-            accumulator: Vec::new(),
-            last_packet_time: None,
-            frames_received: 0,
-            client_address: None,
-            ack_error_selection: AckErrorOption::Success,
-        }
-    }
-}
-
-impl eframe::App for SimulatorApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let now = Instant::now();
-
-        // Check if we should finalize the accumulated frame
-        // (no new packets for a while means the frame is complete)
-        if let Some(last_time) = self.last_packet_time {
-            if now.duration_since(last_time).as_millis() as u64 > FRAME_ACCUMULATION_WINDOW_MS
-                && !self.accumulator.is_empty()
-            {
-                // Finalize the accumulated frame
-                self.current_frame = std::mem::take(&mut self.accumulator);
-                self.frames_received += 1;
-                self.last_packet_time = None;
-            }
-        }
-
-        // Process incoming events
-        while let Ok(event) = self.event_rx.try_recv() {
-            match event {
-                ServerEvent::Frame(points) => {
-                    // Accumulate points from this packet
-                    self.accumulator.extend(points);
-                    self.last_packet_time = Some(now);
-                }
-                ServerEvent::ClientConnected(addr) => {
-                    self.client_address = Some(addr);
-                }
-                ServerEvent::ClientDisconnected => {
-                    self.client_address = None;
-                }
-            }
-        }
-
-        // Request continuous repaints for smooth rendering
-        ctx.request_repaint();
-
-        // Get render settings for the canvas
-        let render_settings = {
-            let settings = self.settings.read().unwrap();
-            RenderSettings {
-                point_size: settings.point_size,
-                show_grid: settings.show_grid,
-                show_blanking: settings.show_blanking,
-                invert_y: settings.invert_y,
-            }
-        };
-
-        // Left side panel with controls
-        egui::SidePanel::left("controls")
-            .default_width(180.0)
-            .show(ctx, |ui| {
-                ui.heading("Visualization");
-                ui.add_space(4.0);
-
-                {
-                    let mut settings = self.settings.write().unwrap();
-
-                    ui.horizontal(|ui| {
-                        ui.label("Line size:");
-                        ui.add(
-                            egui::DragValue::new(&mut settings.point_size)
-                                .speed(0.1)
-                                .range(1.0..=10.0),
-                        );
-                    });
-
-                    ui.checkbox(&mut settings.show_grid, "Show grid");
-                    ui.checkbox(&mut settings.show_blanking, "Show blanking");
-                    ui.checkbox(&mut settings.invert_y, "Invert Y axis");
-                }
-
-                ui.add_space(8.0);
-                ui.separator();
-                ui.heading("Device Status");
-                ui.add_space(4.0);
-
-                {
-                    let mut settings = self.settings.write().unwrap();
-
-                    ui.checkbox(&mut settings.status_malfunction, "Malfunction")
-                        .on_hover_text("Sets malfunction flag in scan response");
-                    ui.checkbox(&mut settings.status_offline, "Offline")
-                        .on_hover_text("Device becomes invisible to discovery");
-                    ui.checkbox(&mut settings.status_excluded, "Excluded")
-                        .on_hover_text("Rejects all real-time messages");
-                    ui.checkbox(&mut settings.status_occupied, "Occupied")
-                        .on_hover_text("Rejects new clients while one is connected");
-                }
-
-                ui.add_space(8.0);
-                ui.separator();
-                ui.heading("Connection");
-                ui.add_space(4.0);
-
-                {
-                    let mut settings = self.settings.write().unwrap();
-
-                    ui.horizontal(|ui| {
-                        ui.label("Timeout (ms):");
-                        ui.add(
-                            egui::DragValue::new(&mut settings.link_timeout_ms)
-                                .speed(10)
-                                .range(100..=5000),
-                        );
-                    });
-
-                    ui.horizontal(|ui| {
-                        ui.label("Latency (ms):");
-                        ui.add(
-                            egui::DragValue::new(&mut settings.simulated_latency_ms)
-                                .speed(1)
-                                .range(0..=200),
-                        );
-                    });
-
-                    if ui.button("Disconnect client").clicked() {
-                        settings.force_disconnect = true;
-                    }
-                }
-
-                ui.add_space(8.0);
-                ui.separator();
-                ui.heading("ACK Injection");
-                ui.add_space(4.0);
-
-                egui::ComboBox::from_label("")
-                    .selected_text(self.ack_error_selection.label())
-                    .show_ui(ui, |ui| {
-                        let options = [
-                            AckErrorOption::Success,
-                            AckErrorOption::EmptyClose,
-                            AckErrorOption::SessionsOccupied,
-                            AckErrorOption::GroupExcluded,
-                            AckErrorOption::InvalidPayload,
-                            AckErrorOption::ProcessingError,
-                        ];
-                        for option in options {
-                            if ui
-                                .selectable_value(
-                                    &mut self.ack_error_selection,
-                                    option,
-                                    option.label(),
-                                )
-                                .clicked()
-                            {
-                                let mut settings = self.settings.write().unwrap();
-                                settings.ack_error_code = option.code();
-                            }
-                        }
-                    });
-            });
-
-        // Stats panel at bottom
-        egui::TopBottomPanel::bottom("stats").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(format!("Frames: {}", self.frames_received));
-                ui.separator();
-                ui.label(format!("Points: {}", self.current_frame.len()));
-                if let Some(addr) = &self.client_address {
-                    ui.separator();
-                    ui.label(format!("Client: {}", addr));
-                }
-            });
-        });
-
-        // Main canvas
-        egui::CentralPanel::default()
-            .frame(egui::Frame::none())
-            .show(ctx, |ui| {
-                renderer::render_laser_canvas(ui, &self.current_frame, &render_settings);
-            });
-    }
-
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        self.running.store(false, Ordering::SeqCst);
-    }
 }
