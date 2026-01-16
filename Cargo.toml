@@ -77,8 +77,8 @@ name = "callback"
 path = "examples/callback.rs"
 
 [[example]]
-name = "audio"
-path = "examples/audio.rs"
+name = "frame_adapter"
+path = "examples/frame_adapter.rs"
 
 [package.metadata.docs.rs]
 features = ["all-dacs"]

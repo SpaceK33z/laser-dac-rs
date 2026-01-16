@@ -40,7 +40,7 @@ cargo run --example automatic -- circle
 cargo run --example automatic -- triangle
 # callback mode (DAC-driven timing):
 cargo run --example callback -- circle
-# frame-based mode (using FrameAdapter):
+# frame mode (using FrameAdapter):
 cargo run --example frame_adapter -- circle
 # audio-reactive (requires microphone):
 cargo run --example audio

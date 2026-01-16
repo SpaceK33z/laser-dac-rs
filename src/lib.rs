@@ -123,8 +123,8 @@ pub use types::{
 // Stream and Device types
 pub use stream::{Device, OwnedDevice, Stream, StreamControl};
 
-// Frame adapters
-pub use frame_adapter::{Frame, FrameAdapter, FrameSource, SharedFrameAdapter};
+// Frame adapters (converts point buffers to continuous streams)
+pub use frame_adapter::{Frame, FrameAdapter, SharedFrameAdapter};
 
 // Conditional exports based on features
 
