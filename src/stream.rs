@@ -309,10 +309,26 @@ impl Stream {
             // Call producer
             match producer(req.clone()) {
                 Some(points) => {
-                    if let Err(e) = self.write(&req, &points) {
-                        on_error(e);
-                        if let Err(e2) = self.handle_underrun(&req) {
-                            on_error(e2);
+                    // Try to write, handling backpressure with retries
+                    loop {
+                        match self.write(&req, &points) {
+                            Ok(()) => break,
+                            Err(e) if e.is_would_block() => {
+                                // Backend buffer full - wait briefly and retry
+                                std::thread::sleep(Duration::from_millis(1));
+                                if self.control.is_stop_requested() {
+                                    return Ok(RunExit::Stopped);
+                                }
+                                continue;
+                            }
+                            Err(e) => {
+                                // Real error - report and handle underrun
+                                on_error(e);
+                                if let Err(e2) = self.handle_underrun(&req) {
+                                    on_error(e2);
+                                }
+                                break;
+                            }
                         }
                     }
                 }
@@ -372,7 +388,23 @@ impl Stream {
         };
 
         if let Some(backend) = &mut self.backend {
-            let _ = backend.try_write_chunk(self.config.pps, &fill_points);
+            match backend.try_write_chunk(self.config.pps, &fill_points) {
+                Ok(WriteOutcome::Written) => {
+                    // Update stream state to keep timebase accurate
+                    let n_points = fill_points.len();
+                    self.state.last_chunk = Some(fill_points);
+                    self.state.current_instant += n_points as u64;
+                    self.state.scheduled_ahead += n_points as u64;
+                    self.state.stats.chunks_written += 1;
+                    self.state.stats.points_written += n_points as u64;
+                }
+                Ok(WriteOutcome::WouldBlock) => {
+                    // Backend is full, can't write fill points - this is expected
+                }
+                Err(_) => {
+                    // Backend error during underrun handling - ignore, we're already recovering
+                }
+            }
         }
 
         Ok(())
@@ -459,11 +491,16 @@ impl Device {
     ///
     /// Returns both the stream and the device info, so metadata remains accessible.
     pub fn start_stream(mut self, cfg: StreamConfig) -> Result<(Stream, DeviceInfo)> {
-        let backend = self.backend.take().ok_or_else(|| {
+        let mut backend = self.backend.take().ok_or_else(|| {
             Error::invalid_config("device backend has already been used for a stream")
         })?;
 
         Self::validate_config(&self.info.caps, &cfg)?;
+
+        // Connect the backend if not already connected
+        if !backend.is_connected() {
+            backend.connect()?;
+        }
 
         let chunk_points = cfg
             .chunk_points
