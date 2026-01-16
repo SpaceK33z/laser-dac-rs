@@ -14,6 +14,9 @@ const AUDIO_BUFFER_SIZE: usize = 1024;
 /// Threshold below which we consider the signal silent (for blanking)
 const SILENCE_THRESHOLD: f32 = 0.01;
 
+/// Number of blank points for the return sweep
+const BLANK_COUNT: usize = 8;
+
 /// Global audio state - lazily initialized on first use
 static AUDIO_STATE: OnceLock<Arc<Mutex<AudioState>>> = OnceLock::new();
 
@@ -220,7 +223,10 @@ pub fn create_audio_points(n_points: usize) -> Vec<LaserPoint> {
     }
 }
 
-/// Generate laser points for mono time-domain oscilloscope display
+/// Generate laser points for mono time-domain oscilloscope display.
+///
+/// Uses sawtooth sweep (left-to-right) with blanked return for maximum responsiveness.
+/// Each sweep shows the latest audio data.
 fn generate_mono_oscilloscope(samples: &[f32], n_points: usize) -> Vec<LaserPoint> {
     if samples.is_empty() {
         return vec![LaserPoint::blanked(0.0, 0.0); n_points];
@@ -241,18 +247,13 @@ fn generate_mono_oscilloscope(samples: &[f32], n_points: usize) -> Vec<LaserPoin
 
     let mut points = Vec::with_capacity(n_points);
 
-    // Add leading blank points
-    let blank_count = 3;
-    let first_y = samples.first().copied().unwrap_or(0.0) * scale;
-    for _ in 0..blank_count {
-        points.push(LaserPoint::blanked(-1.0, first_y));
-    }
+    // Reserve points for blanked return
+    let visible_points = n_points.saturating_sub(BLANK_COUNT);
 
-    // Map samples to laser points: X = time (linear ramp), Y = amplitude
-    let usable_points = n_points.saturating_sub(blank_count * 2);
-    for i in 0..usable_points {
-        let t = i as f32 / usable_points as f32;
-        let x = t * 2.0 - 1.0; // -1 to 1
+    // Sweep left-to-right with audio waveform
+    for i in 0..visible_points {
+        let t = i as f32 / (visible_points - 1).max(1) as f32;
+        let x = t * 2.0 - 1.0; // -1 to +1
 
         // Map point index to sample index
         let sample_idx = (t * (samples.len() - 1) as f32) as usize;
@@ -265,17 +266,10 @@ fn generate_mono_oscilloscope(samples: &[f32], n_points: usize) -> Vec<LaserPoin
         points.push(LaserPoint::new(x, y, 0, intensity, 0, intensity));
     }
 
-    // Add trailing blank points
-    let last_y = samples.last().copied().unwrap_or(0.0) * scale;
-    for _ in 0..blank_count {
-        points.push(LaserPoint::blanked(1.0, last_y));
+    // Blanked return to start position
+    for _ in 0..BLANK_COUNT {
+        points.push(LaserPoint::blanked(-1.0, 0.0));
     }
-
-    // Ensure we have exactly n_points
-    while points.len() < n_points {
-        points.push(LaserPoint::blanked(0.0, 0.0));
-    }
-    points.truncate(n_points);
 
     points
 }

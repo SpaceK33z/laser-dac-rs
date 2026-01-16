@@ -15,7 +15,7 @@ pub struct Args {
     pub shape: Shape,
 
     /// Minimum number of points per frame
-    #[arg(short, long, default_value_t = 600)]
+    #[arg(short, long, default_value_t = 200)]
     pub min_points: usize,
 }
 
