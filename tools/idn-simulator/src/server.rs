@@ -13,8 +13,8 @@ use idn_mock_server::{
     IDNFLG_STATUS_REALTIME,
 };
 
-use super::protocol_handler::{parse_frame_data, RenderPoint};
-use super::SimulatorSettings;
+use crate::protocol_handler::{parse_frame_data, ParsedChunk};
+use crate::settings::SimulatorSettings;
 
 /// Server configuration from command-line arguments.
 pub struct SimulatorServerConfig {
@@ -25,7 +25,8 @@ pub struct SimulatorServerConfig {
 
 /// Events sent from the server to the main thread.
 pub enum ServerEvent {
-    Frame(Vec<RenderPoint>),
+    /// A chunk of points with timing information.
+    Chunk(ParsedChunk),
     ClientConnected(SocketAddr),
     ClientDisconnected,
 }
@@ -47,9 +48,9 @@ impl SimulatorBehavior {
 
 impl ServerBehavior for SimulatorBehavior {
     fn on_frame_received(&mut self, raw_data: &[u8]) {
-        // Parse and forward frame data
-        if let Some(points) = parse_frame_data(raw_data) {
-            let _ = self.event_tx.send(ServerEvent::Frame(points));
+        // Parse and forward chunk data with timing info
+        if let Some(chunk) = parse_frame_data(raw_data) {
+            let _ = self.event_tx.send(ServerEvent::Chunk(chunk));
         }
     }
 
